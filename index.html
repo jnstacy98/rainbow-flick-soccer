@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Rainbow Flick Soccer</title>
+  <meta name="description" content="Third-person 3D online soccer. Create a room, send your friend the invite link and play 1v1 up to 9v9 in your browser.">
+  <meta property="og:title" content="Rainbow Flick Soccer">
+  <meta property="og:description" content="Join my 3D soccer match! 1v1 up to 9v9, right in your browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- ===== Main menu ===== -->
+  <section id="menu" class="screen">
+    <div class="card menu-card">
+      <h1 class="logo"><span class="rb">Rainbow Flick</span><span class="sub">SOCCER</span></h1>
+      <p class="tag">Third-person 3D soccer with friends · 1v1 up to 9v9</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="nameInput" maxlength="14" placeholder="Player" autocomplete="nickname">
+      </label>
+
+      <div id="inviteBanner" class="invite-banner" hidden>
+        You've been invited to game <b id="inviteCodeText"></b>. Enter your name and press <b>Join</b>.
+      </div>
+
+      <div class="menu-grid">
+        <div class="menu-box">
+          <h3>Host a game</h3>
+          <p>Get an invite code and a link to send your friends.</p>
+          <button id="createBtn" class="btn primary">Create game</button>
+        </div>
+        <div class="menu-box">
+          <h3>Join a game</h3>
+          <input id="codeInput" class="code-input" maxlength="7" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button id="joinBtn" class="btn secondary">Join</button>
+        </div>
+      </div>
+      <button id="practiceBtn" class="btn ghost">Practice offline vs bots</button>
+      <p id="menuMsg" class="msg" role="status"></p>
+    </div>
+  </section>
+
+  <!-- ===== Lobby ===== -->
+  <section id="lobby" class="screen" hidden>
+    <div class="card lobby-card">
+      <div class="lobby-head">
+        <h2 id="lobbyTitle">Game lobby</h2>
+        <button id="leaveLobbyBtn" class="btn small ghost">Leave</button>
+      </div>
+
+      <div id="invitePanel" class="invite-panel">
+        <div class="code-box">
+          <span class="label">Invite code</span>
+          <span id="roomCode" class="room-code">------</span>
+        </div>
+        <div class="invite-actions">
+          <input id="inviteLink" class="link-input" readonly>
+          <div class="row">
+            <button id="copyLinkBtn" class="btn small primary">Copy invite link</button>
+            <button id="copyCodeBtn" class="btn small secondary">Copy code</button>
+            <button id="shareBtn" class="btn small ghost" hidden>Share…</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="teams">
+        <div class="team" data-team="0">
+          <div class="team-head"><span class="dot"></span><span class="tname">Sunset</span><span class="count"></span></div>
+          <ul class="plist"></ul>
+          <button class="btn small join-team" data-team="0">Join Sunset</button>
+        </div>
+        <div class="vs">VS</div>
+        <div class="team" data-team="1">
+          <div class="team-head"><span class="dot"></span><span class="tname">Ocean</span><span class="count"></span></div>
+          <ul class="plist"></ul>
+          <button class="btn small join-team" data-team="1">Join Ocean</button>
+        </div>
+      </div>
+
+      <div class="settings">
+        <label>Match length
+          <select id="durationSel">
+            <option value="180">3 minutes</option>
+            <option value="300" selected>5 minutes</option>
+            <option value="600">10 minutes</option>
+          </select>
+        </label>
+        <label>Fill with bots up to
+          <select id="fillSel">
+            <option value="0">No bots</option>
+            <option value="1">1 per team</option><option value="2">2 per team</option>
+            <option value="3">3 per team</option><option value="4">4 per team</option>
+            <option value="5">5 per team</option><option value="6">6 per team</option>
+            <option value="7">7 per team</option><option value="8">8 per team</option>
+            <option value="9">9 per team</option>
+          </select>
+        </label>
+      </div>
+
+      <button id="startBtn" class="btn primary big">Start match</button>
+      <p id="lobbyMsg" class="msg" role="status"></p>
+    </div>
+  </section>
+
+  <!-- ===== In-game HUD ===== -->
+  <section id="hud" hidden>
+    <div class="scorebar">
+      <div class="sb-team t0"><span class="sb-name">Sunset</span><span id="score0" class="sb-score">0</span></div>
+      <div id="clock" class="sb-clock">5:00</div>
+      <div class="sb-team t1"><span id="score1" class="sb-score">0</span><span class="sb-name">Ocean</span></div>
+    </div>
+    <canvas id="minimap" width="200" height="130"></canvas>
+    <div id="center" class="center-msg"></div>
+    <div id="toasts"></div>
+    <div class="meters">
+      <div class="meter"><span>Power</span><div class="bar"><i id="powerBar"></i></div></div>
+      <div class="meter"><span>Stamina</span><div class="bar"><i id="staminaBar"></i></div></div>
+    </div>
+    <div id="help" class="help">
+      <b>Controls</b> <span class="hint">(H to hide)</span>
+      <ul>
+        <li><kbd>W A S D</kbd> move · <kbd>Shift</kbd> sprint</li>
+        <li><kbd>Mouse</kbd> camera (click to lock) · <kbd>←→</kbd> turn</li>
+        <li>Hold <kbd>Click</kbd>/<kbd>Space</kbd> charge shot, release to shoot</li>
+        <li><kbd>Right-click</kbd>/<kbd>E</kbd> pass · <kbd>Q</kbd> chip</li>
+        <li><kbd>F</kbd> rainbow flick · <kbd>C</kbd> tackle</li>
+        <li><kbd>V</kbd> ball cam · <kbd>Tab</kbd> scores · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</li>
+      </ul>
+    </div>
+    <button id="menuBtn" class="btn small ghost hud-menu" aria-label="Menu">☰</button>
+    <div id="lockHint" class="lock-hint">Click the field to control the camera</div>
+    <div id="scoreTable" class="score-table" hidden></div>
+  </section>
+
+  <!-- Touch controls -->
+  <div id="touch" hidden>
+    <div id="stickZone"></div>
+    <div id="lookZone"></div>
+    <div id="stick"><div id="knob"></div></div>
+    <div class="tbtns">
+      <button id="tShoot" class="tb big">Shoot</button>
+      <button id="tPass" class="tb">Pass</button>
+      <button id="tChip" class="tb">Chip</button>
+      <button id="tFlick" class="tb">Flick</button>
+      <button id="tTackle" class="tb">Tackle</button>
+      <button id="tSprint" class="tb">Sprint</button>
+    </div>
+  </div>
+
+  <!-- ===== Pause menu ===== -->
+  <section id="pause" class="screen overlay" hidden>
+    <div class="card small-card">
+      <h2>Menu</h2>
+      <div id="pauseInvite" class="pause-invite">
+        <span>Invite code <b id="pauseCode"></b></span>
+        <button id="pauseCopyBtn" class="btn small secondary">Copy invite link</button>
+      </div>
+      <button id="resumeBtn" class="btn primary">Resume</button>
+      <button id="toLobbyBtn" class="btn secondary">End match &amp; return to lobby</button>
+      <button id="ballCamBtn" class="btn ghost">Ball cam: off</button>
+      <button id="muteBtn" class="btn ghost">Sound: on</button>
+      <button id="leaveGameBtn" class="btn ghost danger">Leave game</button>
+    </div>
+  </section>
+
+  <!-- ===== Full time ===== -->
+  <section id="end" class="screen overlay" hidden>
+    <div class="card small-card">
+      <h2>Full time</h2>
+      <div id="endScore" class="end-score"></div>
+      <div id="endWinner" class="end-winner"></div>
+      <div id="endScorers" class="end-scorers"></div>
+      <button id="rematchBtn" class="btn primary">Rematch</button>
+      <button id="endLobbyBtn" class="btn secondary">Back to lobby</button>
+      <p id="endWait" class="msg">Waiting for the host…</p>
+      <button id="endLeaveBtn" class="btn ghost danger">Leave game</button>
+    </div>
+  </section>
+
+  <div id="loading" class="loading">Loading…</div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
