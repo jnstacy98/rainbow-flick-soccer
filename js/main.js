@@ -630,9 +630,17 @@ function enterGame() {
   $('lockHint').hidden = input.isTouch;
 }
 
+// Kicks go where you're steering (WASD / joystick, relative to the camera).
+// Standing still, they go where the camera is looking.
+function actionAim() {
+  const m = input.movement();
+  if (Math.hypot(m.mx, m.mz) > 0.3) return Math.atan2(m.mx, m.mz);
+  return input.yaw;
+}
+
 input.onAction = (kind, power) => {
   if (app.screen !== 'game') return;
-  const aim = input.yaw;
+  const aim = actionAim();
   if (app.role === 'client') {
     app.net.send({ t: 'act', k: kind, p: Math.round(power * 100) / 100, aim: Math.round(aim * 1000) / 1000 });
     const pr = app.pred;

@@ -380,9 +380,9 @@ export class Sim {
       }
     }
 
-    // Dribble control.
+    // Dribble control (not by someone who just kicked it this frame).
     this.owner = null;
-    if (best && bestD < C.controlRange && b.y < 0.9 && best.tackleT <= 0) {
+    if (best && best.kickCd <= 0 && bestD < C.controlRange && b.y < 0.9 && best.tackleT <= 0) {
       const p = best;
       const rvx = b.vx - p.vx, rvz = b.vz - p.vz;
       const rel = Math.hypot(rvx, rvz);
@@ -418,6 +418,8 @@ export class Sim {
       case 'shoot': {
         const pw = a.power;
         const sp = 13 + 21 * pw;
+        const aim = this.assistShotAim(p, a.aim);
+        const ax = Math.sin(aim), az = Math.cos(aim);
         vx = ax * sp; vz = az * sp; vy = 1.2 + 3.2 * pw;
         break;
       }
@@ -453,9 +455,27 @@ export class Sim {
     }
     b.vx = vx; b.vy = vy; b.vz = vz;
     p.kickCd = a.kind === 'flick' ? 0.55 : 0.32;
+    this.lastKicker = p.id;
     this.owner = null;
     this.touch(p);
     this.events.push({ k: 'kick', id: p.id, kind: a.kind, power: a.power });
+  }
+
+  // Gentle aim assist: shots roughly at the opponent goal are pulled inside the posts.
+  assistShotAim(p, aim) {
+    const f = this.field;
+    const gx = p.team === 0 ? f.L / 2 : -f.L / 2;
+    const dx = gx - this.ball.x;
+    if (Math.abs(dx) > 40 || Math.sign(dx) !== Math.sign(Math.sin(aim)) || Math.abs(Math.sin(aim)) < 0.2) return aim;
+    // Where would the shot cross the goal line?
+    const zAt = this.ball.z + (dx / Math.sin(aim)) * Math.cos(aim);
+    const lim = f.goalW / 2 - 0.5;
+    const miss = Math.abs(zAt) - lim;
+    if (miss <= 0 || miss > 6) return aim; // on target already, or clearly aimed elsewhere
+    const tz = Math.sign(zAt) * (lim - 0.2);
+    const fixed = Math.atan2(dx, tz - this.ball.z);
+    const t = 1 - miss / 6; // stronger assist the closer the aim was
+    return aim + wrapAngle(fixed - aim) * t;
   }
 
   findPassTarget(p, aim) {
@@ -466,8 +486,8 @@ export class Sim {
       const d = Math.hypot(dx, dz);
       if (d < 2 || d > 45) continue;
       const ang = Math.abs(wrapAngle(Math.atan2(dx, dz) - aim));
-      if (ang > 0.85) continue;
-      const score = -ang * 18 - d * 0.25;
+      if (ang > 1.0) continue;
+      const score = -ang * 22 - d * 0.2;
       if (score > bestScore) { bestScore = score; best = q; }
     }
     return best;
@@ -503,6 +523,7 @@ export class Sim {
       // Player bodies.
       for (const p of this.players.values()) {
         if (b.y > 1.9) continue;
+        if (p.id === this.lastKicker && p.kickCd > 0) continue;
         const dx = b.x - p.x, dz = b.z - p.z;
         const d = Math.hypot(dx, dz);
         const minD = C.playerRadius + r;

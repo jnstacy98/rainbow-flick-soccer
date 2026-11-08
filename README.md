@@ -24,6 +24,7 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 | Tackle | `C` | Tackle |
 | Call for a pass | `R` | Call |
 | Pause / resume match for everyone | `P` (or the menu) | Menu → Pause |
+| Aim | Shots, passes and chips go the way you're steering. Standing still, they go where the camera looks. Shots close to the goal get a little aim assist. | same |
 | Ball cam toggle | `V` | on by default |
 | Scores / mute / menu | `Tab` / `M` / `Esc` | ☰ button |
 
