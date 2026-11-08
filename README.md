@@ -9,7 +9,7 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 - **Call for a pass**: press `R` and a "PASS!" bubble appears over your head. Bot teammates on the ball will pass to you, and human teammates get a notification.
 - **Bot skill levels**: the host picks Easy, Normal, Hard or Pro bots separately for each team, in the lobby or from the in-game menu.
 - **Play goalkeeper**: tap **🧤 Play goalkeeper** in the lobby or the in-game menu (one per team). In your own box you catch the ball automatically. Tackle dives, Pass throws to a teammate, Shoot punts, Chip lobs and Flick rolls the ball out. You can hold the ball for up to 6 seconds.
-- **Follow camera**: the camera swings round behind the way you're running, so you don't need your other thumb to turn it. `V` (or the menu) switches to Ball cam or Manual.
+- **Camera**: the default Pitch view looks down the pitch toward the goal you're attacking and leans a little toward the ball, so "up" on the stick always means toward that goal. `V` (or the menu) switches to Follow player (turns behind you as you run), Ball cam or Manual.
 - **Aim arrow and pass target**: when you're on the ball, a yellow arrow shows where a kick will go, and a yellow ring marks the teammate a pass will reach.
 - **Free-kick tie breaker**: if a match ends level, it goes to a free-kick shootout. Teams take turns shooting at one goal against the other team's keeper: five kicks each, then sudden death. As the kicker, aim with the stick or `A`/`D` (the arrow shows where) and shoot. As the keeper, move along the line and dive. The host can turn it off in the lobby ("If it's a draw").
 - **Practice offline**: play against bots by yourself, no internet needed.
@@ -29,7 +29,7 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 | Call for a pass | `R` | Call |
 | Pause / resume match for everyone | `P` (or the menu) | Menu → Pause |
 | Aim | Shots, passes and chips go the way you're steering. Standing still, they go where the camera looks. Shots close to the goal get a little aim assist. | same |
-| Camera mode (Follow / Ball / Manual) | `V` | Menu |
+| Camera mode (Pitch / Follow / Ball / Manual) | `V` | Menu |
 | Scores / mute / menu | `Tab` / `M` / `Esc` | ☰ button |
 
 ## Hosting the page (GitHub Pages)
