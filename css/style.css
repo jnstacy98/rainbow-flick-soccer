@@ -262,3 +262,4 @@ body.touch .meters { bottom: auto; top: 64px; right: auto; left: 12px; }
 .pause-skills label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .pause-skills select { padding: 8px 10px; }
 .pause-icon { display: inline-block; width: 12px; height: 14px; margin-right: 8px; border-left: 4px solid var(--accent); border-right: 4px solid var(--accent); vertical-align: -1px; }
+.gk-btn { background: rgba(255, 255, 255, 0.1); border: 1px dashed rgba(255, 255, 255, 0.35); }

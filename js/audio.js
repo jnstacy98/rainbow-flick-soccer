@@ -65,6 +65,7 @@ export const sfx = {
   goal() { noise(2.2, 0.35, 700); [392, 494, 587, 784].forEach((f, i) => setTimeout(() => tone(f, 0.3, 'triangle', 0.14), i * 120)); },
   call() { tone(520, 0.09, 'triangle', 0.16, 160); setTimeout(() => tone(700, 0.12, 'triangle', 0.14, 120), 90); },
   pause() { tone(440, 0.15, 'sine', 0.12, -120); },
+  save() { noise(0.15, 0.3, 300); tone(180, 0.15, 'triangle', 0.2, -60); },
   click() { tone(660, 0.05, 'sine', 0.08); },
   end() { tone(2000, 0.3, 'square', 0.05); setTimeout(() => tone(2000, 0.3, 'square', 0.05), 400); setTimeout(() => tone(1600, 0.8, 'square', 0.05), 800); },
 };

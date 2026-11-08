@@ -31,6 +31,12 @@ export const C = {
   actionBuffer: 0.22,
   countdown: 3,
   goalPause: 3.5,
+  diveSpeed: 11.5,
+  diveTime: 0.45,
+  diveCooldown: 1.1,
+  catchReach: 1.3,
+  diveReach: 2.2,
+  maxHold: 6,
 };
 
 // Bot skill levels: movement speed, reaction time, shot accuracy and aggression.
@@ -43,10 +49,45 @@ export const BOT_SKILLS = [
 
 // Field dimensions scale with the larger team so 1v1 isn't lost on a huge pitch.
 export function fieldForTeamSize(n) {
-  if (n <= 2) return { L: 56, W: 36, goalW: 6.4, goalH: 2.5, goalD: 2.0 };
-  if (n <= 4) return { L: 70, W: 44, goalW: 7.0, goalH: 2.6, goalD: 2.2 };
-  if (n <= 6) return { L: 86, W: 54, goalW: 7.32, goalH: 2.6, goalD: 2.4 };
-  return { L: 100, W: 64, goalW: 7.32, goalH: 2.6, goalD: 2.4 };
+  let f;
+  if (n <= 2) f = { L: 56, W: 36, goalW: 6.4, goalH: 2.5, goalD: 2.0 };
+  else if (n <= 4) f = { L: 70, W: 44, goalW: 7.0, goalH: 2.6, goalD: 2.2 };
+  else if (n <= 6) f = { L: 86, W: 54, goalW: 7.32, goalH: 2.6, goalD: 2.4 };
+  else f = { L: 100, W: 64, goalW: 7.32, goalH: 2.6, goalD: 2.4 };
+  f.boxD = Math.min(16.5, f.L * 0.16); // penalty area depth
+  f.boxW = Math.min(40.3, f.W * 0.62); // penalty area width
+  return f;
+}
+
+// Penalty area bounds for the team defending it (where the keeper can use hands).
+export function ownBox(f, team) {
+  const boxD = f.boxD ?? Math.min(16.5, f.L * 0.16);
+  const boxW = f.boxW ?? Math.min(40.3, f.W * 0.62);
+  return team === 0
+    ? { x0: -f.L / 2, x1: -f.L / 2 + boxD, z0: -boxW / 2, z1: boxW / 2 }
+    : { x0: f.L / 2 - boxD, x1: f.L / 2, z0: -boxW / 2, z1: boxW / 2 };
+}
+
+export function inBox(box, x, z) {
+  return x >= box.x0 && x <= box.x1 && z >= box.z0 && z <= box.z1;
+}
+
+// Choose the teammate a pass aimed in direction `aim` should go to.
+// The direction matters far more than distance, so you get the player you
+// point at, not just the closest one. `players` items need {id,team,x,z}.
+export function pickPassTarget(players, from, aim) {
+  let best = null, bestScore = -Infinity;
+  for (const q of players) {
+    if (q.id === from.id || q.team !== from.team) continue;
+    const dx = q.x - from.x, dz = q.z - from.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 2.5 || d > 50) continue;
+    const ang = Math.abs(wrapAngle(Math.atan2(dx, dz) - aim));
+    if (ang > 0.7) continue; // ~40 degrees either side
+    const score = -ang * 60 - d * 0.05;
+    if (score > bestScore) { bestScore = score; best = q; }
+  }
+  return best;
 }
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -65,8 +106,8 @@ export function integratePlayerMovement(p, input, dt, opts = {}) {
   if (len > 1) { mx /= len; mz /= len; }
   if (frozen) { mx = 0; mz = 0; }
 
-  if (p.tackleT > 0) {
-    // Committed lunge: keep velocity, slow slightly.
+  if (p.tackleT > 0 || p.diveT > 0) {
+    // Committed lunge / dive: keep velocity, slow slightly.
     p.vx *= 1 - 1.5 * dt;
     p.vz *= 1 - 1.5 * dt;
   } else {
@@ -98,6 +139,11 @@ export function integratePlayerMovement(p, input, dt, opts = {}) {
     const lim = C.playerRadius;
     p.x = clamp(p.x, -f.L / 2 + lim, f.L / 2 - lim);
     p.z = clamp(p.z, -f.W / 2 + lim, f.W / 2 - lim);
+  }
+  if (opts.box) {
+    // A keeper holding the ball must stay in their area.
+    p.x = clamp(p.x, opts.box.x0, opts.box.x1);
+    p.z = clamp(p.z, opts.box.z0, opts.box.z1);
   }
 }
 
@@ -137,6 +183,7 @@ export class Sim {
       input: emptyInput(), actions: [], goals: 0,
       ai: bot ? { t: Math.random() * 0.2, tx: 0, tz: 0 } : null,
       callT: 0, callCd: 0,
+      gk: false, isGK: false, holding: false, holdT: 0, diveT: 0, diveCd: 0,
     };
     this.players.set(id, p);
     if (this.phase !== 'lobby') this.placeAtSpot(p);
@@ -146,6 +193,33 @@ export class Sim {
   removePlayer(id) {
     this.players.delete(id);
     if (this.owner === id) this.owner = null;
+    if (this.holder === id) this.holder = null;
+  }
+
+  // Human goalkeeper role (one per team). Returns false if the slot is taken.
+  setKeeper(id, on) {
+    const p = this.players.get(id);
+    if (!p) return false;
+    if (on) {
+      const other = this.teamList(p.team).find((q) => q.gk && q !== p && !q.bot);
+      if (other) return false;
+      p.gk = true;
+    } else {
+      p.gk = false;
+      if (this.holder === id) this.dropBall(p);
+    }
+    this.refreshKeepers();
+    if (this.phase !== 'lobby' && on) this.placeAtSpot(p);
+    return true;
+  }
+
+  refreshKeepers() {
+    for (const team of [0, 1]) {
+      const spots = this.formation(team);
+      for (const q of this.teamList(team)) q.isGK = !!spots.get(q.id)?.gk;
+    }
+    const h = this.holder && this.players.get(this.holder);
+    if (this.holder && (!h || !h.isGK)) { if (h) h.holding = false; this.holder = null; }
   }
 
   teamList(team) {
@@ -167,6 +241,7 @@ export class Sim {
     if (!p) return;
     if (kind === 'call') { this.callForPass(p); return; }
     if (!['shoot', 'pass', 'chip', 'flick', 'tackle'].includes(kind)) return;
+    if (typeof target !== 'string') target = null;
     p.actions = p.actions.filter((a) => a.kind !== kind);
     p.actions.push({ kind, power: clamp(+power || 0, 0, 1), aim: aim ?? p.input.aim, t: C.actionBuffer, target });
   }
@@ -214,6 +289,8 @@ export class Sim {
   resetKickoff() {
     this.ball = { x: 0, y: C.ballRadius, z: 0, vx: 0, vy: 0, vz: 0 };
     this.owner = null;
+    this.holder = null;
+    this.refreshKeepers();
     for (const p of this.players.values()) this.placeAtSpot(p);
     this.phase = 'countdown';
     this.phaseT = C.countdown;
@@ -228,8 +305,11 @@ export class Sim {
     const dir = team === 0 ? -1 : 1; // own half sign
     const spots = new Map();
     let outfield = list;
-    if (n >= 3) {
-      const gk = list.find((p) => p.bot) || null;
+    // A human who picked goalkeeper always gets the spot; otherwise a bot
+    // keeps goal once the team has 3+ players.
+    const humanGK = list.find((p) => p.gk && !p.bot) || null;
+    if (humanGK || n >= 3) {
+      const gk = humanGK || list.find((p) => p.bot) || null;
       if (gk) {
         spots.set(gk.id, { x: dir * (f.L / 2 - 1.6), z: 0, gk: true });
         outfield = list.filter((p) => p !== gk);
@@ -264,7 +344,8 @@ export class Sim {
     // Kickoff team: nearest attacker steps up to the ball.
     p.yaw = p.team === 0 ? Math.PI / 2 : -Math.PI / 2;
     p.actions = [];
-    p.tackleT = 0; p.stunT = 0;
+    p.tackleT = 0; p.stunT = 0; p.diveT = 0;
+    if (p.holding) { p.holding = false; if (this.holder === p.id) this.holder = null; }
   }
 
   frozen() {
@@ -290,6 +371,8 @@ export class Sim {
     }
 
     const frozen = this.frozen();
+    this.refreshKeepers();
+    if (this.phase !== 'play' && this.holder) this.dropBall(this.players.get(this.holder));
 
     for (const p of this.players.values()) {
       p.callT = Math.max(0, p.callT - dt);
@@ -304,7 +387,17 @@ export class Sim {
       p.tackleCd = Math.max(0, p.tackleCd - dt);
       p.tackleT = Math.max(0, p.tackleT - dt);
       p.stunT = Math.max(0, p.stunT - dt);
-      integratePlayerMovement(p, p.input, dt, { frozen, field: this.field, speedMul: p.bot ? this.skillOf(p.team).speed : 1 });
+      p.diveT = Math.max(0, p.diveT - dt);
+      p.diveCd = Math.max(0, p.diveCd - dt);
+      if (p.holding) {
+        p.holdT += dt;
+        if (p.holdT > C.maxHold) this.release(p, { kind: 'flick', aim: p.yaw, power: 0 });
+      }
+      integratePlayerMovement(p, p.input, dt, {
+        frozen, field: this.field,
+        speedMul: p.bot ? this.skillOf(p.team).speed : 1,
+        box: p.holding ? ownBox(this.field, p.team) : null,
+      });
     }
 
     this.collidePlayers();
@@ -336,6 +429,7 @@ export class Sim {
 
   handleBallControl(dt) {
     const b = this.ball;
+    const holder = this.holder && this.players.get(this.holder);
     // Find closest eligible player for dribble control.
     let best = null, bestD = Infinity;
     for (const p of this.players.values()) {
@@ -350,8 +444,26 @@ export class Sim {
       p.actions = p.actions.filter((a) => a.t > 0);
       if (!p.actions.length) continue;
 
+      // Keeper holding the ball: any kick button releases it.
+      if (p.holding) {
+        const a = p.actions.find((x) => x.kind !== 'tackle');
+        p.actions = [];
+        if (a) this.release(p, a);
+        continue;
+      }
+
       const ti = p.actions.findIndex((a) => a.kind === 'tackle');
-      if (ti >= 0 && p.tackleCd <= 0 && p.stunT <= 0) {
+      // Keepers dive instead of tackling when in their own area.
+      if (ti >= 0 && p.isGK && p.diveCd <= 0 && p.stunT <= 0 && inBox(ownBox(this.field, p.team), p.x, p.z)) {
+        const a = p.actions[ti];
+        p.actions.splice(ti, 1);
+        let dx = p.input.mx, dz = p.input.mz;
+        if (Math.hypot(dx, dz) < 0.1) { dx = Math.sin(a.aim); dz = Math.cos(a.aim); }
+        const l = Math.hypot(dx, dz) || 1;
+        p.vx = (dx / l) * C.diveSpeed; p.vz = (dz / l) * C.diveSpeed;
+        p.diveT = C.diveTime; p.diveCd = C.diveCooldown;
+        this.events.push({ k: 'dive', id: p.id });
+      } else if (ti >= 0 && p.tackleCd <= 0 && p.stunT <= 0) {
         const a = p.actions[ti];
         p.actions.splice(ti, 1);
         let dx = p.input.mx, dz = p.input.mz;
@@ -362,12 +474,25 @@ export class Sim {
         this.events.push({ k: 'lunge', id: p.id });
       }
 
-      if (p.kickCd > 0 || p.stunT > 0) continue;
+      if (p.kickCd > 0 || p.stunT > 0 || holder) continue;
       if (p._bd > C.kickRange || b.y > 1.7) continue;
       const a = p.actions.find((x) => x.kind !== 'tackle');
       if (!a) continue;
       p.actions = p.actions.filter((x) => x !== a);
       this.kick(p, a);
+    }
+
+    if (holder) { this.owner = holder.id; return; }
+
+    // Goalkeepers catch the ball in their own area.
+    for (const p of this.players.values()) {
+      if (!p.isGK || p.kickCd > 0 || p.stunT > 0) continue;
+      if (!inBox(ownBox(this.field, p.team), p.x, p.z)) continue;
+      const reach = p.diveT > 0 ? C.diveReach : C.catchReach;
+      if (p._bd < reach && b.y < (p.diveT > 0 ? 2.5 : 2.6)) {
+        this.catchBall(p);
+        return;
+      }
     }
 
     // Tackle knocks the ball.
@@ -406,6 +531,74 @@ export class Sim {
     }
   }
 
+  catchBall(p) {
+    p.holding = true;
+    p.holdT = 0;
+    p.diveT = 0;
+    p.actions = [];
+    this.holder = p.id;
+    this.owner = p.id;
+    const speed = Math.hypot(this.ball.vx, this.ball.vy, this.ball.vz);
+    this.touch(p);
+    this.pinBall();
+    this.events.push({ k: 'save', id: p.id, team: p.team, big: speed > 14 });
+  }
+
+  pinBall() {
+    const p = this.players.get(this.holder);
+    if (!p) { this.holder = null; return; }
+    const b = this.ball;
+    b.x = p.x + Math.sin(p.yaw) * 0.45;
+    b.z = p.z + Math.cos(p.yaw) * 0.45;
+    b.y = 1.15;
+    b.vx = p.vx; b.vz = p.vz; b.vy = 0;
+  }
+
+  dropBall(p) {
+    if (!p) { this.holder = null; return; }
+    p.holding = false;
+    if (this.holder === p.id) this.holder = null;
+    this.ball.y = Math.max(this.ball.y, C.ballRadius);
+  }
+
+  // Keeper throws, punts or rolls the ball out.
+  release(p, a) {
+    const b = this.ball;
+    let aim = a.aim;
+    let vx, vy, vz, kind;
+    if (a.kind === 'pass') {
+      kind = 'throw';
+      const tgt = a.target && this.players.get(a.target);
+      const mate = tgt && tgt.team === p.team && tgt !== p ? tgt : pickPassTarget(this.players.values(), p, aim);
+      if (mate) aim = Math.atan2(mate.x + mate.vx * 0.4 - p.x, mate.z + mate.vz * 0.4 - p.z);
+      const d = mate ? Math.hypot(mate.x - p.x, mate.z - p.z) : 16;
+      const sp = clamp(8 + d * 0.5, 10, 22);
+      vx = Math.sin(aim) * sp; vz = Math.cos(aim) * sp; vy = d > 18 ? 4.5 : 1.8;
+    } else if (a.kind === 'shoot') {
+      kind = 'punt';
+      const sp = 17 + 13 * a.power;
+      vx = Math.sin(aim) * sp; vz = Math.cos(aim) * sp; vy = 8 + 4 * a.power;
+    } else if (a.kind === 'chip') {
+      kind = 'lob';
+      const sp = 13 + 5 * a.power;
+      vx = Math.sin(aim) * sp; vz = Math.cos(aim) * sp; vy = 10;
+    } else {
+      kind = 'roll';
+      vx = Math.sin(aim) * 5; vz = Math.cos(aim) * 5; vy = 0;
+    }
+    p.holding = false;
+    this.holder = null;
+    b.x = p.x + Math.sin(aim) * 0.8;
+    b.z = p.z + Math.cos(aim) * 0.8;
+    b.y = kind === 'roll' ? C.ballRadius : 1.2;
+    b.vx = vx; b.vy = vy; b.vz = vz;
+    p.kickCd = 0.5;
+    this.lastKicker = p.id;
+    this.owner = null;
+    this.touch(p);
+    this.events.push({ k: 'kick', id: p.id, kind, power: a.power || 0.5 });
+  }
+
   touch(p, quiet = false) {
     if (!quiet || this.lastTouch !== p.id) this.lastTouch = p.id;
   }
@@ -430,7 +623,7 @@ export class Sim {
       }
       case 'pass': {
         const tgt = a.target && this.players.get(a.target);
-        const mate = tgt && tgt.team === p.team && tgt !== p ? tgt : this.findPassTarget(p, a.aim);
+        const mate = tgt && tgt.team === p.team && tgt !== p ? tgt : pickPassTarget(this.players.values(), p, a.aim);
         if (mate) {
           const tx = mate.x + mate.vx * 0.45, tz = mate.z + mate.vz * 0.45;
           const dx = tx - b.x, dz = tz - b.z;
@@ -479,24 +672,14 @@ export class Sim {
   }
 
   findPassTarget(p, aim) {
-    let best = null, bestScore = -Infinity;
-    for (const q of this.players.values()) {
-      if (q === p || q.team !== p.team) continue;
-      const dx = q.x - p.x, dz = q.z - p.z;
-      const d = Math.hypot(dx, dz);
-      if (d < 2 || d > 45) continue;
-      const ang = Math.abs(wrapAngle(Math.atan2(dx, dz) - aim));
-      if (ang > 1.0) continue;
-      const score = -ang * 22 - d * 0.2;
-      if (score > bestScore) { bestScore = score; best = q; }
-    }
-    return best;
+    return pickPassTarget(this.players.values(), p, aim);
   }
 
   stepBall(dt) {
     const b = this.ball;
     const f = this.field;
     const r = C.ballRadius;
+    if (this.holder) { this.pinBall(); if (this.holder) return; }
     const sub = 4;
     const h = dt / sub;
     for (let s = 0; s < sub; s++) {
@@ -649,7 +832,20 @@ export class Sim {
       ai.sprint = false;
       ai.action = null;
 
-      if (spot.gk) {
+      if (spot.gk && p.holding) {
+        // Hold briefly, then throw to a teammate (or a caller) or punt upfield.
+        ai.tx = p.x; ai.tz = p.z;
+        if (p.holdT > 0.9 + Math.random() * 0.6) {
+          const caller = this.passCaller(p);
+          const upfield = Math.atan2(dirX, (Math.random() - 0.5) * 1.2);
+          const mate = caller || pickPassTarget(this.players.values(), p, upfield);
+          if (mate && Math.random() < 0.75) {
+            ai.action = { kind: 'pass', power: 0.5, aim: Math.atan2(mate.x - p.x, mate.z - p.z), target: mate.id };
+          } else {
+            ai.action = { kind: 'shoot', power: 0.7 + Math.random() * 0.3, aim: upfield };
+          }
+        }
+      } else if (spot.gk) {
         const ballNearGoal = Math.abs(b.x - ownX) < 13 && Math.abs(b.z) < f.goalW + 6;
         if (ballNearGoal && myD < sk.gkReach) {
           ai.tx = b.x; ai.tz = b.z; ai.sprint = true;
@@ -657,7 +853,7 @@ export class Sim {
           ai.tx = ownX + dirX * 1.4;
           ai.tz = clamp(b.z * 0.35, -f.goalW / 2 + 0.6, f.goalW / 2 - 0.6);
         }
-        if (myD < C.kickRange && b.y < 1.5) {
+        if (myD < C.kickRange && b.y < 1.5 && !inBox(ownBox(f, p.team), p.x, p.z)) {
           const caller = this.passCaller(p);
           ai.action = caller && Math.random() < sk.passCall
             ? { kind: 'pass', power: 0.5, aim: Math.atan2(caller.x - p.x, caller.z - p.z), target: caller.id }
@@ -750,7 +946,8 @@ export class Sim {
       b: [r2(b.x), r2(b.y), r2(b.z), r2(b.vx), r2(b.vy), r2(b.vz)],
       p: [...this.players.values()].map((p) => [
         p.num, r2(p.x), r2(p.z), r2(p.vx), r2(p.vz), r2(p.yaw),
-        Math.round(p.stamina * 100), (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0),
+        Math.round(p.stamina * 100), (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0)
+          | (p.diveT > 0 ? 16 : 0) | (p.holding ? 32 : 0) | (p.isGK ? 64 : 0),
       ]),
       f: this.field,
       pb: this.phase === 'paused' ? this.pausedBy : undefined,

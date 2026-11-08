@@ -8,6 +8,9 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 - **Pause or end the match**: open the menu (`Esc` or ☰). Anyone can pause or resume the match for everyone, and the host can end it early to show the result or go back to the lobby.
 - **Call for a pass**: press `R` and a "PASS!" bubble appears over your head. Bot teammates on the ball will pass to you, and human teammates get a notification.
 - **Bot skill levels**: the host picks Easy, Normal, Hard or Pro bots separately for each team, in the lobby or from the in-game menu.
+- **Play goalkeeper**: tap **🧤 Play goalkeeper** in the lobby or the in-game menu (one per team). In your own box you catch the ball automatically. Tackle dives, Pass throws to a teammate, Shoot punts, Chip lobs and Flick rolls the ball out. You can hold the ball for up to 6 seconds.
+- **Follow camera**: the camera swings round behind the way you're running, so you don't need your other thumb to turn it. `V` (or the menu) switches to Ball cam or Manual.
+- **Aim arrow and pass target**: when you're on the ball, a yellow arrow shows where a kick will go, and a yellow ring marks the teammate a pass will reach.
 - **Practice offline**: play against bots by yourself, no internet needed.
 
 ## Controls
@@ -21,11 +24,11 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 | Pass to a teammate | Right click or `E` | Pass |
 | Chip / lob | `Q` | Chip |
 | Rainbow flick | `F` | Flick |
-| Tackle | `C` | Tackle |
+| Tackle (keeper: dive) | `C` | Tackle / Dive |
 | Call for a pass | `R` | Call |
 | Pause / resume match for everyone | `P` (or the menu) | Menu → Pause |
 | Aim | Shots, passes and chips go the way you're steering. Standing still, they go where the camera looks. Shots close to the goal get a little aim assist. | same |
-| Ball cam toggle | `V` | on by default |
+| Camera mode (Follow / Ball / Manual) | `V` | Menu |
 | Scores / mute / menu | `Tab` / `M` / `Esc` | ☰ button |
 
 ## Hosting the page (GitHub Pages)

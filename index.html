@@ -79,12 +79,14 @@
         <div class="team" data-team="0">
           <div class="team-head"><span class="dot"></span><span class="tname">Sunset</span><span class="count"></span></div>
           <ul class="plist"></ul>
+          <button class="btn small gk-btn" data-team="0">🧤 Play goalkeeper</button>
           <button class="btn small join-team" data-team="0">Join Sunset</button>
         </div>
         <div class="vs">VS</div>
         <div class="team" data-team="1">
           <div class="team-head"><span class="dot"></span><span class="tname">Ocean</span><span class="count"></span></div>
           <ul class="plist"></ul>
+          <button class="btn small gk-btn" data-team="1">🧤 Play goalkeeper</button>
           <button class="btn small join-team" data-team="1">Join Ocean</button>
         </div>
       </div>
@@ -143,7 +145,8 @@
         <li>Kicks go the way you steer (or where the camera looks if standing)</li>
         <li><kbd>Right-click</kbd>/<kbd>E</kbd> pass · <kbd>Q</kbd> chip</li>
         <li><kbd>F</kbd> rainbow flick · <kbd>C</kbd> tackle · <kbd>R</kbd> call for pass</li>
-        <li><kbd>V</kbd> ball cam · <kbd>Tab</kbd> scores · <kbd>M</kbd> mute · <kbd>P</kbd> pause · <kbd>Esc</kbd> menu</li>
+        <li>Goalkeeper: catch in your box, <kbd>C</kbd> dive, <kbd>E</kbd> throw, <kbd>Click</kbd> punt</li>
+        <li><kbd>V</kbd> camera mode · <kbd>Tab</kbd> scores · <kbd>M</kbd> mute · <kbd>P</kbd> pause · <kbd>Esc</kbd> menu</li>
       </ul>
     </div>
     <button id="menuBtn" class="btn small ghost hud-menu" aria-label="Menu">☰</button>
@@ -188,7 +191,8 @@
         <label>Sunset bots <select id="pSkill0Sel" class="skill-sel" data-team="0"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select></label>
         <label>Ocean bots <select id="pSkill1Sel" class="skill-sel" data-team="1"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select></label>
       </div>
-      <button id="ballCamBtn" class="btn ghost">Ball cam: off</button>
+      <button id="keeperBtn" class="btn ghost">🧤 Play goalkeeper</button>
+      <button id="ballCamBtn" class="btn ghost">Camera: Follow player</button>
       <button id="muteBtn" class="btn ghost">Sound: on</button>
       <button id="leaveGameBtn" class="btn ghost danger">Leave game</button>
     </div>

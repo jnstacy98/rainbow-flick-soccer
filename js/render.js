@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { TEAMS, C } from './sim.js';
 
+const KEEPER_KIT = [0x9be564, 0xf15bb5]; // goalkeeper shirts per team
 const RAINBOW = [0xff3b3b, 0xff8c1a, 0xffe02e, 0x3fdc4a, 0x2fa8ff, 0x5b4bff, 0xc04bff];
 
 export class Renderer {
@@ -47,6 +48,17 @@ export class Renderer {
     this.ballMarker.rotation.x = -Math.PI / 2;
     this.scene.add(this.ballMarker);
 
+    this.aimArrow = makeAimArrow();
+    this.aimArrow.visible = false;
+    this.scene.add(this.aimArrow);
+    this.targetRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.7, 0.95, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9, depthWrite: false })
+    );
+    this.targetRing.rotation.x = -Math.PI / 2;
+    this.targetRing.visible = false;
+    this.scene.add(this.targetRing);
+
     this.particles = [];
     this.trailTimer = 0;
     this.trailUntil = 0;
@@ -76,6 +88,7 @@ export class Renderer {
       this.scene.remove(this.fieldGroup);
       this.fieldGroup.traverse((o) => { o.geometry?.dispose(); });
     }
+    this.field = f;
     this.fieldGroup = buildStadium(f);
     this.scene.add(this.fieldGroup);
   }
@@ -90,10 +103,11 @@ export class Renderer {
     return m;
   }
 
-  makePlayer(team, name, isMe) {
+  makePlayer(team, name, isMe, gk = false) {
     const t = TEAMS[team];
     const g = new THREE.Group();
-    const shirt = new THREE.MeshStandardMaterial({ color: t.color, roughness: 0.6 });
+    g.rotation.order = 'YXZ';
+    const shirt = new THREE.MeshStandardMaterial({ color: gk ? KEEPER_KIT[team] : t.color, roughness: 0.6 });
     const accent = new THREE.MeshStandardMaterial({ color: t.accent, roughness: 0.6 });
     const skin = new THREE.MeshStandardMaterial({ color: 0xf1c09a, roughness: 0.7 });
     const shorts = new THREE.MeshStandardMaterial({ color: 0x1d1f2b, roughness: 0.7 });
@@ -138,9 +152,19 @@ export class Renderer {
     armL.position.set(-0.42, 1.55, 0);
     armR.position.set(0.42, 1.55, 0);
     g.add(armL, armR);
+    if (gk) {
+      // Big goalkeeper gloves.
+      const gloveMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+      for (const arm of [armL, armR]) {
+        const glove = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), gloveMat);
+        glove.position.y = -0.7;
+        glove.castShadow = true;
+        arm.add(glove);
+      }
+    }
 
     // Name tag.
-    const label = makeLabel(name, t.css, isMe);
+    const label = makeLabel(gk ? `🧤 ${name}` : name, t.css, isMe);
     label.position.y = 2.65;
     g.add(label);
 
@@ -163,7 +187,7 @@ export class Renderer {
     }
 
     this.scene.add(g);
-    return { g, legL, legR, armL, armR, torso, label, ring, bubble, phase: 0, team, name, isMe };
+    return { g, legL, legR, armL, armR, torso, label, ring, bubble, phase: 0, team, name, isMe, gk };
   }
 
   syncPlayers(list) {
@@ -171,12 +195,13 @@ export class Renderer {
     for (const p of list) {
       seen.add(p.num);
       let m = this.players.get(p.num);
-      if (m && (m.team !== p.team || m.name !== p.name || m.isMe !== p.isMe)) {
+      const gk = !!(p.flags & 64);
+      if (m && (m.team !== p.team || m.name !== p.name || m.isMe !== p.isMe || m.gk !== gk)) {
         this.disposePlayer(p.num);
         m = null;
       }
       if (!m) {
-        m = this.makePlayer(p.team, p.name, p.isMe);
+        m = this.makePlayer(p.team, p.name, p.isMe, gk);
         this.players.set(p.num, m);
       }
     }
@@ -208,10 +233,19 @@ export class Renderer {
       const s = Math.sin(m.phase) * amp;
       m.legL.rotation.x = tackling ? -1.2 : s;
       m.legR.rotation.x = tackling ? -1.2 : kicking ? -1.1 : -s;
-      m.armL.rotation.x = -s * 0.9;
-      m.armR.rotation.x = s * 0.9;
+      const diving = p.flags & 16;
+      const holding = p.flags & 32;
+      m.armL.rotation.x = holding ? -1.5 : diving ? -2.8 : -s * 0.9;
+      m.armR.rotation.x = holding ? -1.5 : diving ? -2.8 : s * 0.9;
       m.torso.rotation.x = tackling ? 0.6 : Math.min(0.25, sp * 0.02);
-      m.g.position.y = tackling ? -0.35 : Math.abs(Math.sin(m.phase)) * amp * 0.06;
+      m.g.position.y = tackling ? -0.35 : diving ? 0.25 : Math.abs(Math.sin(m.phase)) * amp * 0.06;
+      // Dive: lean sideways toward the dive direction.
+      if (diving) {
+        const side = Math.sin(Math.atan2(p.vx, p.vz) - p.yaw);
+        m.g.rotation.z += ((side >= 0 ? -1.2 : 1.2) - m.g.rotation.z) * Math.min(1, dt * 14);
+      } else {
+        m.g.rotation.z *= Math.max(0, 1 - dt * 10);
+      }
       m.label.material.opacity = (p.flags & 2) ? 0.4 : 1;
       m.bubble.visible = !!(p.flags & 8);
       if (m.bubble.visible) m.bubble.scale.set(1.6 + Math.sin(this.now * 10) * 0.12, 0.8 + Math.sin(this.now * 10) * 0.06, 1);
@@ -248,8 +282,19 @@ export class Renderer {
     const yaw = opts.yaw, pitch = opts.pitch;
     const dist = opts.dist || 9;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
-    const hd = Math.cos(pitch) * dist;
-    const desired = new THREE.Vector3(target.x - fx * hd, 1.6 + Math.sin(pitch) * dist, target.z - fz * hd);
+    let hd = Math.cos(pitch) * dist;
+    // Pull the camera in so it never ends up inside the stands (e.g. a keeper
+    // standing on the goal line with their back to the crowd).
+    if (this.field) {
+      const bx = this.field.L / 2 + 4, bz = this.field.W / 2 + 4;
+      let k = 1;
+      const cx = target.x - fx * hd, cz = target.z - fz * hd;
+      if (Math.abs(cx) > bx && Math.abs(fx) > 1e-3) k = Math.min(k, (Math.sign(-fx) * bx - target.x) / (-fx * hd));
+      if (Math.abs(cz) > bz && Math.abs(fz) > 1e-3) k = Math.min(k, (Math.sign(-fz) * bz - target.z) / (-fz * hd));
+      k = Math.max(0.3, Math.min(1, k));
+      hd *= k;
+    }
+    const desired = new THREE.Vector3(target.x - fx * hd, 1.6 + Math.sin(pitch) * dist + (dist * Math.cos(pitch) - hd) * 0.5, target.z - fz * hd);
     const look = new THREE.Vector3(target.x + fx * 4, 1.4, target.z + fz * 4);
     if (opts.orbit !== undefined) {
       const t = opts.orbit;
@@ -270,6 +315,21 @@ export class Renderer {
     this.sun.position.set(target.x + 30, 60, target.z + 20);
     this.sun.target.position.set(target.x, 0, target.z);
     this.sun.target.updateMatrixWorld();
+  }
+
+  // Aim arrow on the ground plus a ring under the teammate a pass would reach.
+  setAim(info, players) {
+    if (!info) { this.aimArrow.visible = false; this.targetRing.visible = false; return; }
+    this.aimArrow.visible = true;
+    this.aimArrow.position.set(info.x, 0.04, info.z);
+    this.aimArrow.rotation.y = info.aim;
+    const t = info.target != null ? players.find((p) => p.num === info.target) : null;
+    this.targetRing.visible = !!t;
+    if (t) {
+      this.targetRing.position.set(t.x, 0.05, t.z);
+      const pulse = 1 + Math.sin(this.now * 8) * 0.08;
+      this.targetRing.scale.set(pulse, pulse, pulse);
+    }
   }
 
   rainbowBurst(x = null) {
@@ -485,8 +545,8 @@ function buildStands(f) {
   };
   addStand(f.L + 10, 0, f.W / 2 + 6, 0);
   addStand(f.L + 10, 0, -f.W / 2 - 6, Math.PI);
-  addStand(f.W + 4, f.L / 2 + 7, 0, -Math.PI / 2);
-  addStand(f.W + 4, -f.L / 2 - 7, 0, Math.PI / 2);
+  addStand(f.W + 4, f.L / 2 + 7, 0, Math.PI / 2);
+  addStand(f.W + 4, -f.L / 2 - 7, 0, -Math.PI / 2);
 
   const inst = new THREE.InstancedMesh(crowdGeo, crowdMat, seats.length);
   const mtx = new THREE.Matrix4();
@@ -619,6 +679,28 @@ function makeRainbowStripTexture() {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
   });
+}
+
+function makeAimArrow() {
+  // Flat arrow pointing along +z, starting just in front of the player.
+  const shape = new THREE.Shape();
+  const w = 0.2, head = 0.6, len = 6, start = 1.1;
+  shape.moveTo(-w, start);
+  shape.lineTo(w, start);
+  shape.lineTo(w, len - head);
+  shape.lineTo(head, len - head);
+  shape.lineTo(0, len);
+  shape.lineTo(-head, len - head);
+  shape.lineTo(-w, len - head);
+  shape.closePath();
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2); // lie flat, pointing toward +z
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0xffd23f, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide,
+  }));
+  const g = new THREE.Group();
+  g.add(mesh);
+  return g;
 }
 
 function makeCallBubble(color) {
