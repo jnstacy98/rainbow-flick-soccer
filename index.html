@@ -107,6 +107,12 @@
             <option value="9">9 per team</option>
           </select>
         </label>
+        <label>Sunset bot skill
+          <select id="skill0Sel" class="skill-sel" data-team="0"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select>
+        </label>
+        <label>Ocean bot skill
+          <select id="skill1Sel" class="skill-sel" data-team="1"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select>
+        </label>
       </div>
 
       <button id="startBtn" class="btn primary big">Start match</button>
@@ -134,14 +140,19 @@
         <li><kbd>W A S D</kbd> move · <kbd>Shift</kbd> sprint</li>
         <li><kbd>Mouse</kbd> camera (click to lock) · <kbd>←→</kbd> turn</li>
         <li>Hold <kbd>Click</kbd>/<kbd>Space</kbd> charge shot, release to shoot</li>
+        <li>Kicks go the way you steer (or where the camera looks if standing)</li>
         <li><kbd>Right-click</kbd>/<kbd>E</kbd> pass · <kbd>Q</kbd> chip</li>
-        <li><kbd>F</kbd> rainbow flick · <kbd>C</kbd> tackle</li>
-        <li><kbd>V</kbd> ball cam · <kbd>Tab</kbd> scores · <kbd>M</kbd> mute · <kbd>Esc</kbd> menu</li>
+        <li><kbd>F</kbd> rainbow flick · <kbd>C</kbd> tackle · <kbd>R</kbd> call for pass</li>
+        <li><kbd>V</kbd> ball cam · <kbd>Tab</kbd> scores · <kbd>M</kbd> mute · <kbd>P</kbd> pause · <kbd>Esc</kbd> menu</li>
       </ul>
     </div>
     <button id="menuBtn" class="btn small ghost hud-menu" aria-label="Menu">☰</button>
     <div id="lockHint" class="lock-hint">Click the field to control the camera</div>
     <div id="scoreTable" class="score-table" hidden></div>
+    <div id="pausedBanner" class="paused-banner" hidden>
+      <span><i class="pause-icon"></i><span id="pausedText">Match paused</span></span>
+      <button id="bannerResumeBtn" class="btn small primary">Resume match</button>
+    </div>
   </section>
 
   <!-- Touch controls -->
@@ -156,6 +167,8 @@
       <button id="tFlick" class="tb">Flick</button>
       <button id="tTackle" class="tb">Tackle</button>
       <button id="tSprint" class="tb">Sprint</button>
+      <button id="tCall" class="tb">Call</button>
+      <button id="tMenu" class="tb">Menu</button>
     </div>
   </div>
 
@@ -167,8 +180,14 @@
         <span>Invite code <b id="pauseCode"></b></span>
         <button id="pauseCopyBtn" class="btn small secondary">Copy invite link</button>
       </div>
-      <button id="resumeBtn" class="btn primary">Resume</button>
-      <button id="toLobbyBtn" class="btn secondary">End match &amp; return to lobby</button>
+      <button id="resumeBtn" class="btn primary">Back to game</button>
+      <button id="pauseMatchBtn" class="btn secondary">Pause match for everyone</button>
+      <button id="endNowBtn" class="btn secondary">End match now (show result)</button>
+      <button id="toLobbyBtn" class="btn ghost">End match &amp; return to lobby</button>
+      <div id="pauseSkills" class="pause-skills">
+        <label>Sunset bots <select id="pSkill0Sel" class="skill-sel" data-team="0"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select></label>
+        <label>Ocean bots <select id="pSkill1Sel" class="skill-sel" data-team="1"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select></label>
+      </div>
       <button id="ballCamBtn" class="btn ghost">Ball cam: off</button>
       <button id="muteBtn" class="btn ghost">Sound: on</button>
       <button id="leaveGameBtn" class="btn ghost danger">Leave game</button>

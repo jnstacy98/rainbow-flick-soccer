@@ -144,6 +144,12 @@ export class Renderer {
     label.position.y = 2.65;
     g.add(label);
 
+    // "PASS!" bubble shown while calling for the ball.
+    const bubble = makeCallBubble(t.css);
+    bubble.position.y = 3.35;
+    bubble.visible = false;
+    g.add(bubble);
+
     // Ring under the local player.
     let ring = null;
     if (isMe) {
@@ -157,7 +163,7 @@ export class Renderer {
     }
 
     this.scene.add(g);
-    return { g, legL, legR, armL, armR, torso, label, ring, phase: 0, team, name, isMe };
+    return { g, legL, legR, armL, armR, torso, label, ring, bubble, phase: 0, team, name, isMe };
   }
 
   syncPlayers(list) {
@@ -207,6 +213,8 @@ export class Renderer {
       m.torso.rotation.x = tackling ? 0.6 : Math.min(0.25, sp * 0.02);
       m.g.position.y = tackling ? -0.35 : Math.abs(Math.sin(m.phase)) * amp * 0.06;
       m.label.material.opacity = (p.flags & 2) ? 0.4 : 1;
+      m.bubble.visible = !!(p.flags & 8);
+      if (m.bubble.visible) m.bubble.scale.set(1.6 + Math.sin(this.now * 10) * 0.12, 0.8 + Math.sin(this.now * 10) * 0.06, 1);
       if (m.ring) m.ring.material.opacity = 0.6 + Math.sin(this.now * 5) * 0.25;
       if (p.isMe) me = p;
     }
@@ -611,6 +619,26 @@ function makeRainbowStripTexture() {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
   });
+}
+
+function makeCallBubble(color) {
+  const t = canvasTex(128, 64, (ctx, w, h) => {
+    ctx.fillStyle = '#ffd23f';
+    roundRect(ctx, 4, 4, w - 8, h - 18, 14);
+    ctx.fill();
+    ctx.beginPath(); ctx.moveTo(w / 2 - 10, h - 15); ctx.lineTo(w / 2 + 10, h - 15); ctx.lineTo(w / 2, h - 2); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 4;
+    roundRect(ctx, 4, 4, w - 8, h - 18, 14);
+    ctx.stroke();
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 28px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('PASS!', w / 2, (h - 14) / 2 + 2);
+  });
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false, depthTest: false }));
+  s.scale.set(1.6, 0.8, 1);
+  s.renderOrder = 10;
+  return s;
 }
 
 function makeLabel(text, color, isMe) {

@@ -33,6 +33,14 @@ export const C = {
   goalPause: 3.5,
 };
 
+// Bot skill levels: movement speed, reaction time, shot accuracy and aggression.
+export const BOT_SKILLS = [
+  { name: 'Easy', speed: 0.78, think: 0.32, aimErr: 0.32, shootRange: 16, shootChance: 0.35, tackle: 0.08, passCall: 0.5, gkReach: 6 },
+  { name: 'Normal', speed: 0.9, think: 0.16, aimErr: 0.16, shootRange: 22, shootChance: 0.55, tackle: 0.22, passCall: 0.8, gkReach: 9 },
+  { name: 'Hard', speed: 0.98, think: 0.09, aimErr: 0.07, shootRange: 26, shootChance: 0.7, tackle: 0.4, passCall: 0.95, gkReach: 11 },
+  { name: 'Pro', speed: 1.04, think: 0.05, aimErr: 0.03, shootRange: 30, shootChance: 0.85, tackle: 0.6, passCall: 1, gkReach: 13 },
+];
+
 // Field dimensions scale with the larger team so 1v1 isn't lost on a huge pitch.
 export function fieldForTeamSize(n) {
   if (n <= 2) return { L: 56, W: 36, goalW: 6.4, goalH: 2.5, goalD: 2.0 };
@@ -112,7 +120,13 @@ export class Sim {
     this.owner = null;
     this.lastTouch = null;
     this.events = [];
-    this.botTimer = 0;
+    this.botSkill = [1, 1]; // index into BOT_SKILLS per team
+    this.pausedFrom = null;
+    this.pausedBy = '';
+  }
+
+  skillOf(team) {
+    return BOT_SKILLS[clamp(this.botSkill[team] | 0, 0, BOT_SKILLS.length - 1)];
   }
 
   addPlayer(id, name, team, bot = false) {
@@ -121,7 +135,8 @@ export class Sim {
       x: 0, z: 0, vx: 0, vz: 0, yaw: team === 0 ? Math.PI / 2 : -Math.PI / 2,
       stamina: 1, kickCd: 0, tackleT: 0, tackleCd: 0, stunT: 0,
       input: emptyInput(), actions: [], goals: 0,
-      ai: bot ? { t: Math.random() * 0.2, tx: 0, tz: 0, wantShoot: 0 } : null,
+      ai: bot ? { t: Math.random() * 0.2, tx: 0, tz: 0 } : null,
+      callT: 0, callCd: 0,
     };
     this.players.set(id, p);
     if (this.phase !== 'lobby') this.placeAtSpot(p);
@@ -147,12 +162,41 @@ export class Sim {
   }
 
   // kind: shoot | pass | chip | flick | tackle ; power 0..1
-  queueAction(id, kind, power = 0.5, aim) {
+  queueAction(id, kind, power = 0.5, aim, target = null) {
     const p = this.players.get(id);
     if (!p) return;
+    if (kind === 'call') { this.callForPass(p); return; }
     if (!['shoot', 'pass', 'chip', 'flick', 'tackle'].includes(kind)) return;
     p.actions = p.actions.filter((a) => a.kind !== kind);
-    p.actions.push({ kind, power: clamp(+power || 0, 0, 1), aim: aim ?? p.input.aim, t: C.actionBuffer });
+    p.actions.push({ kind, power: clamp(+power || 0, 0, 1), aim: aim ?? p.input.aim, t: C.actionBuffer, target });
+  }
+
+  // A player asks for the ball. Bot teammates on the ball respond by passing.
+  callForPass(p) {
+    if (this.phase !== 'play' || p.callCd > 0) return;
+    p.callT = 2.2;
+    p.callCd = 1.2;
+    this.events.push({ k: 'call', id: p.id, team: p.team });
+  }
+
+  pause(byName = '') {
+    if (this.phase === 'paused' || this.phase === 'lobby' || this.phase === 'ended') return false;
+    this.pausedFrom = { phase: this.phase, t: this.phaseT };
+    this.pausedBy = byName;
+    this.phase = 'paused';
+    for (const p of this.players.values()) { p.vx = 0; p.vz = 0; p.actions = []; }
+    this.events.push({ k: 'paused', by: byName });
+    return true;
+  }
+
+  resume(byName = '') {
+    if (this.phase !== 'paused') return false;
+    const from = this.pausedFrom || { phase: 'play', t: 0 };
+    if (from.phase === 'goal') { this.phase = 'goal'; this.phaseT = from.t; }
+    else { this.phase = 'countdown'; this.phaseT = from.phase === 'countdown' ? Math.max(from.t, 1) : C.countdown; }
+    this.pausedFrom = null;
+    this.events.push({ k: 'resumed', by: byName });
+    return true;
   }
 
   start(durationSec) {
@@ -224,11 +268,11 @@ export class Sim {
   }
 
   frozen() {
-    return this.phase === 'countdown' || this.phase === 'ended' || this.phase === 'lobby';
+    return this.phase === 'countdown' || this.phase === 'ended' || this.phase === 'lobby' || this.phase === 'paused';
   }
 
   step(dt) {
-    if (this.phase === 'lobby' || this.phase === 'ended') return;
+    if (this.phase === 'lobby' || this.phase === 'ended' || this.phase === 'paused') return;
 
     if (this.phase === 'countdown') {
       this.phaseT -= dt;
@@ -246,17 +290,21 @@ export class Sim {
     }
 
     const frozen = this.frozen();
-    this.botTimer -= dt;
-    const thinkBots = this.botTimer <= 0;
-    if (thinkBots) this.botTimer = 0.1;
 
     for (const p of this.players.values()) {
-      if (p.bot && !frozen) this.botThink(p, dt, thinkBots);
+      p.callT = Math.max(0, p.callT - dt);
+      p.callCd = Math.max(0, p.callCd - dt);
+      if (p.bot && !frozen) {
+        p.ai.t -= dt;
+        const think = p.ai.t <= 0;
+        if (think) p.ai.t = this.skillOf(p.team).think * (0.8 + Math.random() * 0.4);
+        this.botThink(p, dt, think);
+      }
       p.kickCd = Math.max(0, p.kickCd - dt);
       p.tackleCd = Math.max(0, p.tackleCd - dt);
       p.tackleT = Math.max(0, p.tackleT - dt);
       p.stunT = Math.max(0, p.stunT - dt);
-      integratePlayerMovement(p, p.input, dt, { frozen, field: this.field, speedMul: p.bot ? 0.9 : 1 });
+      integratePlayerMovement(p, p.input, dt, { frozen, field: this.field, speedMul: p.bot ? this.skillOf(p.team).speed : 1 });
     }
 
     this.collidePlayers();
@@ -332,9 +380,9 @@ export class Sim {
       }
     }
 
-    // Dribble control.
+    // Dribble control (not by someone who just kicked it this frame).
     this.owner = null;
-    if (best && bestD < C.controlRange && b.y < 0.9 && best.tackleT <= 0) {
+    if (best && best.kickCd <= 0 && bestD < C.controlRange && b.y < 0.9 && best.tackleT <= 0) {
       const p = best;
       const rvx = b.vx - p.vx, rvz = b.vz - p.vz;
       const rel = Math.hypot(rvx, rvz);
@@ -370,6 +418,8 @@ export class Sim {
       case 'shoot': {
         const pw = a.power;
         const sp = 13 + 21 * pw;
+        const aim = this.assistShotAim(p, a.aim);
+        const ax = Math.sin(aim), az = Math.cos(aim);
         vx = ax * sp; vz = az * sp; vy = 1.2 + 3.2 * pw;
         break;
       }
@@ -379,7 +429,8 @@ export class Sim {
         break;
       }
       case 'pass': {
-        const mate = this.findPassTarget(p, a.aim);
+        const tgt = a.target && this.players.get(a.target);
+        const mate = tgt && tgt.team === p.team && tgt !== p ? tgt : this.findPassTarget(p, a.aim);
         if (mate) {
           const tx = mate.x + mate.vx * 0.45, tz = mate.z + mate.vz * 0.45;
           const dx = tx - b.x, dz = tz - b.z;
@@ -404,9 +455,27 @@ export class Sim {
     }
     b.vx = vx; b.vy = vy; b.vz = vz;
     p.kickCd = a.kind === 'flick' ? 0.55 : 0.32;
+    this.lastKicker = p.id;
     this.owner = null;
     this.touch(p);
     this.events.push({ k: 'kick', id: p.id, kind: a.kind, power: a.power });
+  }
+
+  // Gentle aim assist: shots roughly at the opponent goal are pulled inside the posts.
+  assistShotAim(p, aim) {
+    const f = this.field;
+    const gx = p.team === 0 ? f.L / 2 : -f.L / 2;
+    const dx = gx - this.ball.x;
+    if (Math.abs(dx) > 40 || Math.sign(dx) !== Math.sign(Math.sin(aim)) || Math.abs(Math.sin(aim)) < 0.2) return aim;
+    // Where would the shot cross the goal line?
+    const zAt = this.ball.z + (dx / Math.sin(aim)) * Math.cos(aim);
+    const lim = f.goalW / 2 - 0.5;
+    const miss = Math.abs(zAt) - lim;
+    if (miss <= 0 || miss > 6) return aim; // on target already, or clearly aimed elsewhere
+    const tz = Math.sign(zAt) * (lim - 0.2);
+    const fixed = Math.atan2(dx, tz - this.ball.z);
+    const t = 1 - miss / 6; // stronger assist the closer the aim was
+    return aim + wrapAngle(fixed - aim) * t;
   }
 
   findPassTarget(p, aim) {
@@ -417,8 +486,8 @@ export class Sim {
       const d = Math.hypot(dx, dz);
       if (d < 2 || d > 45) continue;
       const ang = Math.abs(wrapAngle(Math.atan2(dx, dz) - aim));
-      if (ang > 0.85) continue;
-      const score = -ang * 18 - d * 0.25;
+      if (ang > 1.0) continue;
+      const score = -ang * 22 - d * 0.2;
       if (score > bestScore) { bestScore = score; best = q; }
     }
     return best;
@@ -454,6 +523,7 @@ export class Sim {
       // Player bodies.
       for (const p of this.players.values()) {
         if (b.y > 1.9) continue;
+        if (p.id === this.lastKicker && p.kickCd > 0) continue;
         const dx = b.x - p.x, dz = b.z - p.z;
         const d = Math.hypot(dx, dz);
         const minD = C.playerRadius + r;
@@ -564,6 +634,7 @@ export class Sim {
     const dirX = Math.sign(attackX);
 
     if (think) {
+      const sk = this.skillOf(p.team);
       const spots = this.formation(p.team);
       const spot = spots.get(p.id) || { x: 0, z: 0 };
       const mates = this.teamList(p.team);
@@ -580,14 +651,17 @@ export class Sim {
 
       if (spot.gk) {
         const ballNearGoal = Math.abs(b.x - ownX) < 13 && Math.abs(b.z) < f.goalW + 6;
-        if (ballNearGoal && myD < 9) {
+        if (ballNearGoal && myD < sk.gkReach) {
           ai.tx = b.x; ai.tz = b.z; ai.sprint = true;
         } else {
           ai.tx = ownX + dirX * 1.4;
           ai.tz = clamp(b.z * 0.35, -f.goalW / 2 + 0.6, f.goalW / 2 - 0.6);
         }
         if (myD < C.kickRange && b.y < 1.5) {
-          ai.action = { kind: 'chip', power: 0.9, aim: Math.atan2(dirX, (Math.random() - 0.5) * 0.8) };
+          const caller = this.passCaller(p);
+          ai.action = caller && Math.random() < sk.passCall
+            ? { kind: 'pass', power: 0.5, aim: Math.atan2(caller.x - p.x, caller.z - p.z), target: caller.id }
+            : { kind: 'chip', power: 0.9, aim: Math.atan2(dirX, (Math.random() - 0.5) * 0.8) };
         }
       } else if (chaser === p) {
         const hasBall = this.owner === p.id || myD < C.controlRange;
@@ -595,7 +669,7 @@ export class Sim {
           const gz = (Math.random() - 0.5) * f.goalW * 0.7;
           const gx = attackX;
           const toGoal = Math.hypot(gx - p.x, gz - p.z);
-          const aim = Math.atan2(gx - p.x, gz - p.z);
+          const aim = Math.atan2(gx - p.x, gz - p.z) + (Math.random() - 0.5) * 2 * sk.aimErr;
           // Is an opponent blocking straight ahead?
           let pressured = false;
           for (const q of this.players.values()) {
@@ -604,7 +678,11 @@ export class Sim {
             const d = Math.hypot(dx, dz);
             if (d < 3.2 && Math.abs(wrapAngle(Math.atan2(dx, dz) - aim)) < 0.9) pressured = true;
           }
-          if (toGoal < 24 && Math.random() < 0.55) {
+          const caller = this.passCaller(p);
+          if (caller && Math.random() < sk.passCall) {
+            ai.action = { kind: 'pass', power: 0.5, aim: Math.atan2(caller.x - p.x, caller.z - p.z), target: caller.id };
+            caller.callT = 0;
+          } else if (toGoal < sk.shootRange && Math.random() < sk.shootChance) {
             ai.action = { kind: 'shoot', power: clamp(0.45 + toGoal / 40, 0.5, 1), aim };
           } else if (pressured && Math.random() < 0.5) {
             const fwdAim = Math.atan2(dirX, 0);
@@ -622,7 +700,7 @@ export class Sim {
           ai.sprint = myD > 6 && p.stamina > 0.3;
           // Tackle an opponent dribbler.
           const own = this.owner && this.players.get(this.owner);
-          if (own && own.team !== p.team && myD < 2.4 && p.tackleCd <= 0 && Math.random() < 0.25) {
+          if (own && own.team !== p.team && myD < 2.4 && p.tackleCd <= 0 && Math.random() < sk.tackle) {
             ai.action = { kind: 'tackle', power: 0, aim: Math.atan2(b.x - p.x, b.z - p.z) };
           }
         }
@@ -634,7 +712,7 @@ export class Sim {
         // Stay goal-side when defending.
         if (spot.row === 0 && dirX * (ai.tx - b.x) > 0 && dirX * b.x < 0) ai.tx = b.x - dirX * 4;
       }
-      if (ai.action) this.queueAction(p.id, ai.action.kind, ai.action.power, ai.action.aim);
+      if (ai.action) this.queueAction(p.id, ai.action.kind, ai.action.power, ai.action.aim, ai.action.target);
     }
 
     const dx = ai.tx - p.x, dz = ai.tz - p.z;
@@ -644,6 +722,17 @@ export class Sim {
     p.input.mz = d > 0.15 ? (dz / d) * slow : 0;
     p.input.sprint = !!ai.sprint;
     p.input.aim = Math.atan2(attackX - p.x, -p.z);
+  }
+
+  // Nearest teammate currently calling for the ball (within passing range).
+  passCaller(p) {
+    let best = null, bd = 45;
+    for (const q of this.players.values()) {
+      if (q === p || q.team !== p.team || q.callT <= 0) continue;
+      const d = Math.hypot(q.x - p.x, q.z - p.z);
+      if (d < bd) { bd = d; best = q; }
+    }
+    return best;
   }
 
   // ---------- Networking snapshot ----------
@@ -661,9 +750,10 @@ export class Sim {
       b: [r2(b.x), r2(b.y), r2(b.z), r2(b.vx), r2(b.vy), r2(b.vz)],
       p: [...this.players.values()].map((p) => [
         p.num, r2(p.x), r2(p.z), r2(p.vx), r2(p.vz), r2(p.yaw),
-        Math.round(p.stamina * 100), (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0),
+        Math.round(p.stamina * 100), (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0),
       ]),
       f: this.field,
+      pb: this.phase === 'paused' ? this.pausedBy : undefined,
     };
   }
 

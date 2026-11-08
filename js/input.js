@@ -59,6 +59,8 @@ export class Input {
       case 'KeyQ': this.onAction('chip', 0.7); break;
       case 'KeyF': this.onAction('flick', 0.5); break;
       case 'KeyC': case 'ControlLeft': this.onAction('tackle', 0); break;
+      case 'KeyR': this.onAction('call', 0); break;
+      case 'KeyP': this.onToggle('pause'); break;
       case 'KeyV': this.ballCam = !this.ballCam; this.onToggle('ballcam', this.ballCam); break;
       case 'KeyH': this.onToggle('help'); break;
       case 'KeyM': this.onToggle('mute'); break;
@@ -194,6 +196,8 @@ export class Input {
     btn('tChip', () => this.onAction('chip', 0.7));
     btn('tFlick', () => this.onAction('flick', 0.5));
     btn('tTackle', () => this.onAction('tackle', 0));
+    btn('tCall', () => this.onAction('call', 0));
+    btn('tMenu', () => this.onToggle('menu'));
     btn('tSprint', () => { this.touch.sprint = true; }, () => { this.touch.sprint = false; });
   }
 }
