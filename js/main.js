@@ -15,7 +15,7 @@ const app = {
   screen: 'menu', // menu | lobby | game
   myId: null,
   code: null,
-  settings: { duration: 300, fill: 0 },
+  settings: { duration: 300, fill: 0, skill: [1, 1] },
   roster: [],
   inGame: false,
   paused: false,
@@ -182,7 +182,7 @@ function startHosting(role, name, net, code) {
   app.code = code;
   app.myId = 'host';
   app.sim = new Sim();
-  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0 };
+  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0, skill: [1, 1] };
   app.sim.addPlayer('host', name, 0, false);
   app.inGame = false;
   if (net) {
@@ -235,6 +235,7 @@ function hostOnMessage(peerId, msg) {
     case 'in': sim.setInput(peerId, { mx: msg.mx, mz: msg.mz, sprint: msg.sp, aim: msg.aim }); break;
     case 'act': sim.queueAction(peerId, msg.k, msg.p, typeof msg.aim === 'number' ? msg.aim : undefined); break;
     case 'team': switchTeam(peerId, msg.team); break;
+    case 'pause': setMatchPaused(!!msg.on, sim.players.get(peerId).name); break;
     case 'ping': app.net.send(peerId, { t: 'pong', ts: msg.ts }); break;
   }
 }
@@ -294,10 +295,34 @@ function canStart() {
 function startMatch() {
   if (!canStart()) return;
   rebalanceBots();
+  app.sim.botSkill = app.settings.skill;
   app.sim.start(app.settings.duration);
   app.inGame = true;
   refreshLobby();
   enterGame();
+}
+
+function setMatchPaused(on, byName) {
+  if (!app.sim || !app.inGame) return;
+  if (on) app.sim.pause(byName); else app.sim.resume(byName);
+}
+
+// Anyone can pause/resume; clients ask the host.
+function requestPause(on) {
+  if (app.role === 'client') app.net.send({ t: 'pause', on });
+  else setMatchPaused(on, nameOf(app.myId));
+}
+
+function endMatchNow() {
+  if (!app.sim || !app.inGame || app.sim.phase === 'ended') return;
+  app.sim.endMatch();
+}
+
+function setSkill(team, level) {
+  app.settings.skill = [...(app.settings.skill || [1, 1])];
+  app.settings.skill[team] = level;
+  if (app.sim) app.sim.botSkill = app.settings.skill;
+  refreshLobby();
 }
 
 function returnToLobby() {
@@ -325,6 +350,9 @@ function setLobbyChrome() {
   $('pauseInvite').hidden = !online;
   $('pauseCode').textContent = app.code || '';
   $('toLobbyBtn').hidden = !isHost;
+  $('endNowBtn').hidden = !isHost;
+  $('pauseSkills').hidden = !isHost;
+  document.querySelectorAll('.skill-sel').forEach((el) => { el.disabled = !isHost; });
 }
 
 function inviteLink() {
@@ -368,6 +396,7 @@ function renderLobby() {
   }
   $('durationSel').value = String(app.settings.duration);
   $('fillSel').value = String(app.settings.fill);
+  syncSkillSelects();
 
   const totalHumans = app.roster.filter((p) => !p.bot).length;
   if (isHost) {
@@ -395,6 +424,13 @@ document.querySelectorAll('.join-team').forEach((btn) => {
 });
 $('durationSel').onchange = (e) => { app.settings.duration = +e.target.value; refreshLobby(); };
 $('fillSel').onchange = (e) => { app.settings.fill = +e.target.value; rebalanceBots(); refreshLobby(); };
+document.querySelectorAll('.skill-sel').forEach((el) => {
+  el.onchange = () => { setSkill(+el.dataset.team, +el.value); toast(`${TEAMS[+el.dataset.team].name} bots: ${el.selectedOptions[0].text}`); };
+});
+function syncSkillSelects() {
+  const sk = app.settings.skill || [1, 1];
+  document.querySelectorAll('.skill-sel').forEach((el) => { el.value = String(sk[+el.dataset.team]); });
+}
 $('startBtn').onclick = () => { unlockAudio(); startMatch(); };
 $('leaveLobbyBtn').onclick = () => leave();
 $('copyLinkBtn').onclick = () => copy(inviteLink(), 'Invite link copied! Send it to a friend.');
@@ -474,6 +510,10 @@ function onSnapshot(s) {
   app.latest = s;
   app.field = s.f;
   app.matchPhase = s.ph;
+  if ((s.ph === 'paused') !== !!app.matchPaused && s.ph !== 'ended') {
+    app.matchPaused = s.ph === 'paused';
+    syncPausedUI(s.pb || '');
+  }
 
   // Reconcile the locally predicted player.
   const num = myNum();
@@ -537,7 +577,7 @@ function clientState(dt) {
   // Local prediction for my own player.
   const pr = app.pred;
   if (pr) {
-    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended';
+    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended' || app.matchPhase === 'paused';
     pr.tackleT = Math.max(0, pr.tackleT - dt);
     pr.tackleCd = Math.max(0, pr.tackleCd - dt);
     pr.stunT = Math.max(0, pr.stunT - dt);
@@ -566,7 +606,7 @@ function hostState() {
   const players = [...sim.players.values()].map((p) => ({
     num: p.num, team: p.team, name: p.name, isMe: p.id === app.myId,
     x: p.x, z: p.z, vx: p.vx, vz: p.vz, yaw: p.yaw, stamina: p.stamina,
-    flags: (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0),
+    flags: (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0),
   }));
   return { players, ball: sim.ball };
 }
@@ -574,6 +614,8 @@ function hostState() {
 // ---------- Game flow ----------
 function enterGame() {
   app.ended = false;
+  app.matchPaused = false;
+  syncPausedUI('');
   app.paused = false;
   app.displayBall = null;
   showScreen('game');
@@ -608,6 +650,8 @@ input.onAction = (kind, power) => {
 };
 
 input.onToggle = (name, val) => {
+  if (name === 'pause') requestPause(!matchIsPaused());
+  if (name === 'menu') openPause();
   if (name === 'help') $('help').hidden = !$('help').hidden;
   if (name === 'mute') { const m = toggleMute(); toast(m ? 'Sound off' : 'Sound on'); syncPauseButtons(); }
   if (name === 'ballcam') { toast(val ? 'Ball cam on' : 'Ball cam off'); syncPauseButtons(); }
@@ -638,6 +682,7 @@ function handleEvents(list) {
       case 'start':
         if (app.screen !== 'game') enterGame();
         app.ended = false; $('end').hidden = true; updateInputEnabled();
+        app.matchPaused = false; syncPausedUI('');
         break;
       case 'whistle': sfx.whistle(); centerMsg('GO!', '', 800); break;
       case 'kick':
@@ -652,6 +697,25 @@ function handleEvents(list) {
         break;
       case 'tackle': sfx.tackle(); break;
       case 'post': sfx.post(); toast('Off the woodwork!'); break;
+      case 'call': {
+        const me = app.roster.find((p) => p.id === app.myId);
+        if (e.id === app.myId) { sfx.call(); toast('You called for the ball!'); }
+        else if (me && me.team === e.team) { sfx.call(); toast(`📣 ${nameOf(e.id)} is calling for the ball!`); }
+        break;
+      }
+      case 'paused':
+        sfx.pause();
+        app.matchPaused = true;
+        syncPausedUI(e.by);
+        if (document.pointerLockElement) document.exitPointerLock(); // opens the menu
+        break;
+      case 'resumed':
+        sfx.pause();
+        app.matchPaused = false;
+        syncPausedUI();
+        if (e.by) toast(`${e.by} resumed the match`);
+        if (app.paused) closePause();
+        break;
       case 'goal': {
         sfx.goal();
         const f = app.sim ? app.sim.field : app.field;
@@ -669,6 +733,8 @@ function handleEvents(list) {
 function showEnd(e) {
   sfx.end();
   app.ended = true;
+  app.matchPaused = false;
+  syncPausedUI('');
   updateInputEnabled();
   if (document.pointerLockElement) document.exitPointerLock();
   $('pause').hidden = true;
@@ -707,14 +773,34 @@ function closePause() {
   app.paused = false;
   $('pause').hidden = true;
   updateInputEnabled();
-  if (!input.isTouch) canvas.requestPointerLock?.();
+  if (!input.isTouch) {
+    try { const r = canvas.requestPointerLock?.(); if (r && r.catch) r.catch(() => {}); } catch (e) { /* needs a click */ }
+  }
+}
+function matchIsPaused() {
+  return !!app.matchPaused;
+}
+function syncPausedUI(by) {
+  const paused = matchIsPaused();
+  $('pausedBanner').hidden = !paused || app.screen !== 'game' || app.ended;
+  if (by !== undefined) $('pausedText').textContent = by ? `Match paused by ${by}` : 'Match paused';
+  $('pauseMatchBtn').textContent = paused ? 'Resume match for everyone' : 'Pause match for everyone';
 }
 function syncPauseButtons() {
+  syncPausedUI();
+  syncSkillSelects();
   $('ballCamBtn').textContent = `Ball cam: ${input.ballCam ? 'on' : 'off'} (V)`;
   $('muteBtn').textContent = `Sound: ${isMuted() ? 'off' : 'on'} (M)`;
 }
 $('menuBtn').onclick = () => openPause();
 $('resumeBtn').onclick = () => closePause();
+$('pauseMatchBtn').onclick = () => {
+  const paused = matchIsPaused();
+  requestPause(!paused);
+  if (paused) closePause();
+};
+$('bannerResumeBtn').onclick = () => { requestPause(false); };
+$('endNowBtn').onclick = () => endMatchNow();
 $('toLobbyBtn').onclick = () => returnToLobby();
 $('leaveGameBtn').onclick = () => leave();
 $('ballCamBtn').onclick = () => { input.ballCam = !input.ballCam; syncPauseButtons(); };

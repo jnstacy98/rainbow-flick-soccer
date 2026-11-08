@@ -5,6 +5,9 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 - **Create game**: you get a 6-character invite code and an invite link.
 - **Send the link**: the link opens the game with the code already filled in. Your friend types a name and presses **Join**.
 - **Teams**: up to 9 players per team. Players can switch teams in the lobby, and the host can fill empty spots with bots.
+- **Pause or end the match**: open the menu (`Esc` or ☰). Anyone can pause or resume the match for everyone, and the host can end it early to show the result or go back to the lobby.
+- **Call for a pass**: press `R` and a "PASS!" bubble appears over your head. Bot teammates on the ball will pass to you, and human teammates get a notification.
+- **Bot skill levels**: the host picks Easy, Normal, Hard or Pro bots separately for each team, in the lobby or from the in-game menu.
 - **Practice offline**: play against bots by yourself, no internet needed.
 
 ## Controls
@@ -19,6 +22,8 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 | Chip / lob | `Q` | Chip |
 | Rainbow flick | `F` | Flick |
 | Tackle | `C` | Tackle |
+| Call for a pass | `R` | Call |
+| Pause / resume match for everyone | `P` (or the menu) | Menu → Pause |
 | Ball cam toggle | `V` | on by default |
 | Scores / mute / menu | `Tab` / `M` / `Esc` | ☰ button |
 

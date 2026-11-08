@@ -63,6 +63,8 @@ export const sfx = {
   post() { tone(880, 0.4, 'sine', 0.15); tone(1320, 0.3, 'sine', 0.08); },
   tackle() { noise(0.12, 0.25, 400); },
   goal() { noise(2.2, 0.35, 700); [392, 494, 587, 784].forEach((f, i) => setTimeout(() => tone(f, 0.3, 'triangle', 0.14), i * 120)); },
+  call() { tone(520, 0.09, 'triangle', 0.16, 160); setTimeout(() => tone(700, 0.12, 'triangle', 0.14, 120), 90); },
+  pause() { tone(440, 0.15, 'sine', 0.12, -120); },
   click() { tone(660, 0.05, 'sine', 0.08); },
   end() { tone(2000, 0.3, 'square', 0.05); setTimeout(() => tone(2000, 0.3, 'square', 0.05), 400); setTimeout(() => tone(1600, 0.8, 'square', 0.05), 800); },
 };
