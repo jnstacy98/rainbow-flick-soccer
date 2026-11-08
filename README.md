@@ -1,1 +1,57 @@
-# rainbow-flick-soccer
+# Rainbow Flick Soccer
+
+A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v9.
+
+- **Create game**: you get a 6-character invite code and an invite link.
+- **Send the link**: the link opens the game with the code already filled in. Your friend types a name and presses **Join**.
+- **Teams**: up to 9 players per team. Players can switch teams in the lobby, and the host can fill empty spots with bots.
+- **Practice offline**: play against bots by yourself, no internet needed.
+
+## Controls
+
+| Action | Keyboard / mouse | Touch |
+| --- | --- | --- |
+| Move | `W A S D` | Left-side joystick |
+| Sprint | `Shift` | Sprint button |
+| Camera | Mouse (click the field to lock it), `← →` | Drag on the right side |
+| Shoot (hold to charge) | Hold left click or `Space` | Hold Shoot |
+| Pass to a teammate | Right click or `E` | Pass |
+| Chip / lob | `Q` | Chip |
+| Rainbow flick | `F` | Flick |
+| Tackle | `C` | Tackle |
+| Ball cam toggle | `V` | on by default |
+| Scores / mute / menu | `Tab` / `M` / `Esc` | ☰ button |
+
+## Hosting the page (GitHub Pages)
+
+It's a static site with no build step and no game server.
+
+1. Merge this branch into `main`.
+2. On GitHub, open the repo and go to **Settings → Pages**.
+3. Under **Build and deployment**, pick **Deploy from a branch**, then branch `main` and folder `/ (root)`. Save.
+4. After about a minute the game is live at `https://<your-username>.github.io/rainbow-flick-soccer/`.
+
+Any other static host (Netlify, Vercel, Cloudflare Pages, itch.io as an HTML game) also works: upload the repo as it is.
+
+## How online play works
+
+- Players connect peer-to-peer over WebRTC with [PeerJS](https://peerjs.com/). The invite code is the host's peer ID, so you don't need your own server.
+- The host's browser runs the match (physics, bots, scoring) and sends the game state to everyone about 20 times a second. Other players send their inputs, and their own player is predicted on their screen so movement feels responsive.
+- The host should keep their tab open. If the host leaves, the match ends for everyone.
+- Matchmaking uses the free public PeerJS server (`0.peerjs.com`). To use your own [PeerServer](https://github.com/peers/peerjs-server), add `?peerhost=your.host&peerport=443&peerpath=/` to the page URL. Invite links keep those settings.
+- A few strict networks (some corporate or school Wi-Fi) block WebRTC. If a friend can't connect, try a different network or a phone hotspot.
+
+## Project layout
+
+```
+index.html       Page, menus, lobby and HUD markup
+css/style.css    Styling
+js/main.js       App flow: menu, lobby, hosting/joining, game loop, HUD
+js/sim.js        Authoritative soccer simulation and bot AI (no DOM)
+js/render.js     three.js stadium, players, ball, camera and effects
+js/net.js        PeerJS host/client networking and invite codes
+js/input.js      Keyboard, mouse and touch controls
+js/audio.js      Synthesized sound effects
+```
+
+To run it locally, serve the folder with any static server, for example `python3 -m http.server`, then open `http://localhost:8000`. Opening `index.html` directly from disk won't work because ES modules need a server.
