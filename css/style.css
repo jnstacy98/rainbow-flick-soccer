@@ -262,3 +262,18 @@ body.touch .meters { bottom: auto; top: 64px; right: auto; left: 12px; }
 .pause-skills label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .pause-skills select { padding: 8px 10px; }
 .pause-icon { display: inline-block; width: 12px; height: 14px; margin-right: 8px; border-left: 4px solid var(--accent); border-right: 4px solid var(--accent); vertical-align: -1px; }
+.gk-btn { background: rgba(255, 255, 255, 0.1); border: 1px dashed rgba(255, 255, 255, 0.35); }
+
+.so-tracker {
+  position: absolute; top: 70px; left: 50%; transform: translateX(-50%);
+  background: rgba(10, 14, 32, 0.85); border-radius: 12px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.so-row { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+.so-row span { width: 58px; }
+.so-row b { width: 18px; text-align: center; }
+.so-row i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.4); display: inline-block; }
+.so-row i.hit { background: var(--good); border-color: var(--good); }
+.so-row i.miss { background: var(--bad); border-color: var(--bad); }
+.so-row i.next { border-color: var(--accent); animation: pulse 0.8s infinite alternate; }
+@keyframes pulse { to { transform: scale(1.25); } }
+.end-so { font-size: 20px; color: var(--muted); }

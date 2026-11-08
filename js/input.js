@@ -1,5 +1,22 @@
 // Keyboard, mouse (pointer lock) and touch controls.
 // Produces a camera-relative movement vector and discrete actions.
+//
+// Camera modes:
+//   follow - the camera swings round behind the direction you run (default)
+//   ball   - the camera keeps the ball in view
+//   manual - only the mouse / right thumb / arrow keys turn the camera
+//
+// While a direction is held, movement stays relative to the camera angle at
+// the moment you pressed it, so the follow camera can swing round behind you
+// without changing where you're running.
+
+export const CAM_MODES = ['follow', 'ball', 'manual'];
+export const CAM_LABELS = { follow: 'Follow player', ball: 'Ball cam', manual: 'Manual' };
+const wrap = (a) => {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+};
 
 export class Input {
   constructor(canvas) {
@@ -8,7 +25,11 @@ export class Input {
     this.enabled = false;
     this.yaw = 0;
     this.pitch = 0.3;
-    this.ballCam = false;
+    this.camMode = 'follow';
+    this.refYaw = 0; // camera angle movement is measured against
+    this.held = false;
+    this.heldAng = 0;
+    this.lastManual = 0;
     this.sensitivity = 0.0026;
     this.chargeStart = 0;
     this.charging = false;
@@ -16,7 +37,7 @@ export class Input {
     this.onToggle = () => {}; // (name)
     this.touch = { active: false, jx: 0, jz: 0, sprint: false };
     this.isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-    if (this.isTouch) this.ballCam = true;
+    try { if (CAM_MODES.includes(localStorage.getItem('rfs-cam'))) this.camMode = localStorage.getItem('rfs-cam'); } catch (e) { /* ignore */ }
 
     window.addEventListener('keydown', (e) => this.keydown(e));
     window.addEventListener('keyup', (e) => this.keyup(e));
@@ -37,7 +58,7 @@ export class Input {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('mousemove', (e) => {
       if (!this.enabled || document.pointerLockElement !== canvas) return;
-      this.yaw -= e.movementX * this.sensitivity;
+      this.rotate(-e.movementX * this.sensitivity);
       this.pitch = Math.max(0.05, Math.min(1.1, this.pitch + e.movementY * this.sensitivity * 0.7));
     });
 
@@ -61,7 +82,7 @@ export class Input {
       case 'KeyC': case 'ControlLeft': this.onAction('tackle', 0); break;
       case 'KeyR': this.onAction('call', 0); break;
       case 'KeyP': this.onToggle('pause'); break;
-      case 'KeyV': this.ballCam = !this.ballCam; this.onToggle('ballcam', this.ballCam); break;
+      case 'KeyV': this.cycleCam(); break;
       case 'KeyH': this.onToggle('help'); break;
       case 'KeyM': this.onToggle('mute'); break;
       case 'Tab': this.onToggle('scores', true); break;
@@ -72,6 +93,27 @@ export class Input {
     this.keys.delete(e.code);
     if (e.code === 'Space' && this.charging) this.releaseCharge();
     if (e.code === 'Tab') this.onToggle('scores', false);
+  }
+
+  cycleCam() {
+    this.camMode = CAM_MODES[(CAM_MODES.indexOf(this.camMode) + 1) % CAM_MODES.length];
+    try { localStorage.setItem('rfs-cam', this.camMode); } catch (e) { /* ignore */ }
+    this.onToggle('cam', this.camMode);
+  }
+
+  // Manual camera turn: also turns the movement reference so steering with
+  // the mouse / thumb works while running.
+  rotate(d) {
+    this.yaw += d;
+    this.refYaw += d;
+    this.lastManual = performance.now();
+  }
+
+  // Snap the camera (and movement reference) to an angle, e.g. at kickoff.
+  setYaw(y) {
+    this.yaw = y;
+    this.refYaw = y;
+    this.held = false;
   }
 
   beginCharge() {
@@ -91,27 +133,8 @@ export class Input {
     this.onAction('shoot', Math.max(0.15, p));
   }
 
-  // Called every frame; turns camera with arrow keys / ball cam.
-  update(dt, me, ball) {
-    if (!this.enabled) return;
-    const turn = (this.keys.has('ArrowLeft') ? 1 : 0) - (this.keys.has('ArrowRight') ? 1 : 0);
-    this.yaw += turn * 2.4 * dt;
-    if (this.keys.has('ArrowUp')) this.pitch = Math.max(0.05, this.pitch - dt);
-    if (this.keys.has('ArrowDown')) this.pitch = Math.min(1.1, this.pitch + dt);
-    if (this.ballCam && me && ball && turn === 0 && !this.touch.dragging) {
-      const dx = ball.x - me.x, dz = ball.z - me.z;
-      if (Math.hypot(dx, dz) > 2.5) {
-        const target = Math.atan2(dx, dz);
-        let d = target - this.yaw;
-        while (d > Math.PI) d -= Math.PI * 2;
-        while (d < -Math.PI) d += Math.PI * 2;
-        this.yaw += d * Math.min(1, dt * 3);
-      }
-    }
-  }
-
-  // World-space movement vector from WASD relative to the camera.
-  movement() {
+  // Raw stick / WASD: f = forward, s = right.
+  localMove() {
     let f = 0, s = 0;
     if (this.enabled) {
       if (this.keys.has('KeyW')) f += 1;
@@ -120,8 +143,55 @@ export class Input {
       if (this.keys.has('KeyA')) s -= 1;
       if (this.touch.active) { f += this.touch.jz; s += this.touch.jx; }
     }
-    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
-    const rx = -Math.cos(this.yaw), rz = Math.sin(this.yaw);
+    return { f, s };
+  }
+
+  // Called every frame; turns the camera.
+  update(dt, me, ball) {
+    if (!this.enabled) { this.held = false; this.refYaw = this.yaw; return; }
+    const turn = (this.keys.has('ArrowLeft') ? 1 : 0) - (this.keys.has('ArrowRight') ? 1 : 0);
+    if (turn) this.rotate(turn * 2.4 * dt);
+    if (this.keys.has('ArrowUp')) this.pitch = Math.max(0.05, this.pitch - dt);
+    if (this.keys.has('ArrowDown')) this.pitch = Math.min(1.1, this.pitch + dt);
+
+    // Movement reference: lock while a direction is held.
+    const { f, s } = this.localMove();
+    if (this.camMode === 'manual') {
+      this.refYaw = this.yaw;
+      this.held = Math.hypot(f, s) > 0.2;
+    } else if (Math.hypot(f, s) > 0.2) {
+      const ang = Math.atan2(s, f);
+      if (!this.held) { this.held = true; this.refYaw = this.yaw; this.heldAng = ang; }
+      else if (Math.abs(wrap(ang - this.heldAng)) > 1.9) { this.refYaw = this.yaw; this.heldAng = ang; } // new direction
+    } else {
+      this.held = false;
+      this.refYaw = this.yaw;
+    }
+
+    const manualRecently = performance.now() - this.lastManual < 1200 || this.touch.dragging;
+    if (!me || manualRecently || this.noAutoCam) return;
+    if (this.camMode === 'follow') {
+      // Swing round behind the way the player is running.
+      const sp = Math.hypot(me.vx, me.vz);
+      if (sp > 1.5) {
+        const target = Math.atan2(me.vx, me.vz);
+        const rate = 3.2 * Math.min(1, sp / 7);
+        this.yaw += wrap(target - this.yaw) * Math.min(1, dt * rate);
+      }
+    } else if (this.camMode === 'ball' && ball) {
+      const dx = ball.x - me.x, dz = ball.z - me.z;
+      if (Math.hypot(dx, dz) > 2.5) {
+        this.yaw += wrap(Math.atan2(dx, dz) - this.yaw) * Math.min(1, dt * 3);
+      }
+    }
+  }
+
+  // World-space movement vector from WASD / stick relative to the camera.
+  movement() {
+    const { f, s } = this.localMove();
+    const ry = this.held || this.camMode === 'manual' ? this.refYaw : this.yaw;
+    const fx = Math.sin(ry), fz = Math.cos(ry);
+    const rx = -Math.cos(ry), rz = Math.sin(ry);
     let mx = fx * f + rx * s;
     let mz = fz * f + rz * s;
     const l = Math.hypot(mx, mz);
@@ -165,7 +235,7 @@ export class Input {
           knob.style.transform = `translate(${dx}px, ${dy}px)`;
           this.touch.jx = dx / R; this.touch.jz = -dy / R;
         } else if (t.identifier === lookId) {
-          this.yaw -= (t.clientX - lx) * 0.006;
+          this.rotate(-(t.clientX - lx) * 0.006);
           this.pitch = Math.max(0.05, Math.min(1.1, this.pitch + (t.clientY - ly) * 0.004));
           lx = t.clientX; ly = t.clientY;
         }

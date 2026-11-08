@@ -1,7 +1,7 @@
 // App glue: menus, lobby, hosting/joining, game loop, HUD.
-import { Sim, TEAMS, MAX_PER_TEAM, integratePlayerMovement, fieldForTeamSize, C } from './sim.js';
+import { Sim, TEAMS, MAX_PER_TEAM, integratePlayerMovement, fieldForTeamSize, C, ownBox, inBox, pickPassTarget, shootoutKeeperBox } from './sim.js';
 import { Renderer } from './render.js';
-import { Input } from './input.js';
+import { Input, CAM_LABELS } from './input.js';
 import { HostNet, ClientNet, normalizeCode } from './net.js';
 import { sfx, unlockAudio, toggleMute, isMuted } from './audio.js';
 
@@ -15,7 +15,7 @@ const app = {
   screen: 'menu', // menu | lobby | game
   myId: null,
   code: null,
-  settings: { duration: 300, fill: 0, skill: [1, 1] },
+  settings: { duration: 300, fill: 0, skill: [1, 1], tiebreak: true },
   roster: [],
   inGame: false,
   paused: false,
@@ -182,7 +182,7 @@ function startHosting(role, name, net, code) {
   app.code = code;
   app.myId = 'host';
   app.sim = new Sim();
-  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0, skill: [1, 1] };
+  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0, skill: [1, 1], tiebreak: true };
   app.sim.addPlayer('host', name, 0, false);
   app.inGame = false;
   if (net) {
@@ -233,7 +233,8 @@ function hostOnMessage(peerId, msg) {
   if (!sim || !sim.players.has(peerId)) return;
   switch (msg.t) {
     case 'in': sim.setInput(peerId, { mx: msg.mx, mz: msg.mz, sprint: msg.sp, aim: msg.aim }); break;
-    case 'act': sim.queueAction(peerId, msg.k, msg.p, typeof msg.aim === 'number' ? msg.aim : undefined); break;
+    case 'act': sim.queueAction(peerId, msg.k, msg.p, typeof msg.aim === 'number' ? msg.aim : undefined, typeof msg.tg === 'string' ? msg.tg : null); break;
+    case 'gk': setKeeper(peerId, !!msg.on); break;
     case 'team': switchTeam(peerId, msg.team); break;
     case 'pause': setMatchPaused(!!msg.on, sim.players.get(peerId).name); break;
     case 'ping': app.net.send(peerId, { t: 'pong', ts: msg.ts }); break;
@@ -245,10 +246,38 @@ function switchTeam(id, team) {
   const p = sim.players.get(id);
   if (!p || (team !== 0 && team !== 1) || p.team === team) return;
   if (humans(team).length >= MAX_PER_TEAM) return;
+  p.gk = false;
   p.team = team;
   rebalanceBots();
   if (app.inGame) sim.placeAtSpot(p);
   refreshLobby();
+}
+
+function setKeeper(id, on) {
+  const sim = app.sim;
+  const p = sim && sim.players.get(id);
+  if (!p) return;
+  if (!sim.setKeeper(id, on)) {
+    const msg = 'Your team already has a goalkeeper.';
+    if (id === app.myId) toastOrLobby(msg); else app.net.send(id, { t: 'note', text: msg });
+    return;
+  }
+  refreshLobby();
+  if (app.inGame) toast(on ? `🧤 ${p.name} is now in goal` : `${p.name} left the goal`);
+}
+
+function toastOrLobby(msg) {
+  if (app.screen === 'lobby') setMsg('lobbyMsg', msg, true); else toast(msg);
+}
+
+function requestKeeper(on) {
+  if (app.role === 'client') app.net.send({ t: 'gk', on });
+  else setKeeper(app.myId, on);
+}
+
+function amKeeper() {
+  const me = app.roster.find((p) => p.id === app.myId);
+  return !!(me && me.gk);
 }
 
 function rebalanceBots() {
@@ -275,7 +304,7 @@ function lobbyMessage() {
     code: app.code,
     phase: app.inGame ? 'game' : 'lobby',
     settings: app.settings,
-    players: [...sim.players.values()].map((p) => ({ id: p.id, num: p.num, name: p.name, team: p.team, bot: p.bot, goals: p.goals })),
+    players: [...sim.players.values()].map((p) => ({ id: p.id, num: p.num, name: p.name, team: p.team, bot: p.bot, goals: p.goals, gk: p.gk })),
   };
 }
 
@@ -296,6 +325,7 @@ function startMatch() {
   if (!canStart()) return;
   rebalanceBots();
   app.sim.botSkill = app.settings.skill;
+  app.sim.tiebreak = app.settings.tiebreak !== false;
   app.sim.start(app.settings.duration);
   app.inGame = true;
   refreshLobby();
@@ -353,6 +383,7 @@ function setLobbyChrome() {
   $('endNowBtn').hidden = !isHost;
   $('pauseSkills').hidden = !isHost;
   document.querySelectorAll('.skill-sel').forEach((el) => { el.disabled = !isHost; });
+  $('tiebreakSel').disabled = !isHost;
 }
 
 function inviteLink() {
@@ -377,6 +408,7 @@ function renderLobby() {
       if (p.bot) li.classList.add('bot');
       li.textContent = (p.bot ? '🤖 ' : '⚽ ') + p.name;
       const badges = [];
+      if (p.gk) badges.push('🧤 GK');
       if (p.id === 'host') badges.push('host');
       if (p.id === app.myId) badges.push('you');
       if (p.bot) badges.push('bot');
@@ -389,6 +421,9 @@ function renderLobby() {
       ul.appendChild(li);
     }
     el.querySelector('.count').textContent = `${list.length}/${MAX_PER_TEAM}`;
+    const gkBtn = el.querySelector('.gk-btn');
+    gkBtn.hidden = !me || me.team !== team;
+    if (me) gkBtn.textContent = me.gk ? 'Play outfield instead' : '🧤 Play goalkeeper';
     const btn = el.querySelector('.join-team');
     const humansOnTeam = list.filter((p) => !p.bot).length;
     btn.hidden = !me || me.team === team;
@@ -414,6 +449,9 @@ function renderLobby() {
   }
 }
 
+document.querySelectorAll('.gk-btn').forEach((btn) => {
+  btn.onclick = () => { sfx.click(); requestKeeper(!amKeeper()); };
+});
 document.querySelectorAll('.join-team').forEach((btn) => {
   btn.onclick = () => {
     sfx.click();
@@ -427,7 +465,13 @@ $('fillSel').onchange = (e) => { app.settings.fill = +e.target.value; rebalanceB
 document.querySelectorAll('.skill-sel').forEach((el) => {
   el.onchange = () => { setSkill(+el.dataset.team, +el.value); toast(`${TEAMS[+el.dataset.team].name} bots: ${el.selectedOptions[0].text}`); };
 });
+$('tiebreakSel').onchange = (e) => {
+  app.settings.tiebreak = e.target.value === '1';
+  if (app.sim) app.sim.tiebreak = app.settings.tiebreak;
+  refreshLobby();
+};
 function syncSkillSelects() {
+  $('tiebreakSel').value = app.settings.tiebreak === false ? '0' : '1';
   const sk = app.settings.skill || [1, 1];
   document.querySelectorAll('.skill-sel').forEach((el) => { el.value = String(sk[+el.dataset.team]); });
 }
@@ -483,6 +527,7 @@ function onClientMessage(msg) {
       break;
     }
     case 'bye': backToMenu(msg.reason || 'The host ended the game.'); break;
+    case 'note': toastOrLobby(String(msg.text || '')); break;
   }
 }
 
@@ -493,6 +538,23 @@ function startPinging() {
     if (app.role !== 'client' || !app.net) { clearInterval(pingTimer); return; }
     app.net.send({ t: 'ping', ts: performance.now() });
   }, 2000);
+}
+
+// Current free-kick shootout summary (same shape for host and clients).
+function soInfo() {
+  if (app.role === 'client') return app.latest && app.latest.so ? app.latest.so : null;
+  const sim = app.sim;
+  if (!sim || !sim.so) return null;
+  const so = sim.so;
+  return {
+    k: so.kicks, g: so.goals, tu: so.turn, st: so.stage, r: so.result,
+    ki: sim.players.get(so.kicker)?.num || 0, ke: sim.players.get(so.keeper)?.num || 0,
+  };
+}
+
+function myTeam() {
+  const me = app.roster.find((p) => p.id === app.myId);
+  return me ? me.team : 0;
 }
 
 function myNum() {
@@ -577,11 +639,26 @@ function clientState(dt) {
   // Local prediction for my own player.
   const pr = app.pred;
   if (pr) {
-    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended' || app.matchPhase === 'paused';
+    const so = app.matchPhase === 'shootout' ? soInfo() : null;
+    const soKeeper = so && so.ke === num && (so.st === 'aim' || so.st === 'flight');
+    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended' || app.matchPhase === 'paused'
+      || (app.matchPhase === 'shootout' && !soKeeper);
+    if (so && !soKeeper) {
+      // Everyone else stands still: follow the host's position exactly.
+      const meL = app.latest.p.find((p) => p[0] === num);
+      if (meL) { pr.x = meL[1]; pr.z = meL[2]; pr.yaw = meL[5]; pr.vx = 0; pr.vz = 0; }
+    }
     pr.tackleT = Math.max(0, pr.tackleT - dt);
     pr.tackleCd = Math.max(0, pr.tackleCd - dt);
     pr.stunT = Math.max(0, pr.stunT - dt);
-    integratePlayerMovement(pr, input.movement(), dt, { frozen, field: app.field });
+    pr.diveT = Math.max(0, (pr.diveT || 0) - dt);
+    pr.diveCd = Math.max(0, (pr.diveCd || 0) - dt);
+    const L0 = app.latest && app.latest.p.find((p) => p[0] === num);
+    const holding = L0 && (L0[7] & 32);
+    integratePlayerMovement(pr, input.movement(), dt, {
+      frozen, field: app.field,
+      box: soKeeper ? shootoutKeeperBox(app.field) : holding ? ownBox(app.field, myTeam()) : null,
+    });
     const mine = players.find((p) => p.isMe);
     if (mine) Object.assign(mine, { x: pr.x, z: pr.z, vx: pr.vx, vz: pr.vz, yaw: pr.yaw });
     // When I'm dribbling, draw the ball relative to my predicted position.
@@ -606,7 +683,8 @@ function hostState() {
   const players = [...sim.players.values()].map((p) => ({
     num: p.num, team: p.team, name: p.name, isMe: p.id === app.myId,
     x: p.x, z: p.z, vx: p.vx, vz: p.vz, yaw: p.yaw, stamina: p.stamina,
-    flags: (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0),
+    flags: (p.tackleT > 0 ? 1 : 0) | (p.stunT > 0 ? 2 : 0) | (p.kickCd > 0.2 ? 4 : 0) | (p.callT > 0 ? 8 : 0)
+      | (p.diveT > 0 ? 16 : 0) | (p.holding ? 32 : 0) | (p.isGK ? 64 : 0),
   }));
   return { players, ball: sim.ball };
 }
@@ -624,27 +702,62 @@ function enterGame() {
   const field = app.sim ? app.sim.field : app.field;
   renderer.setField(field);
   // Face the attacking goal.
-  const me = app.roster.find((p) => p.id === app.myId);
-  input.yaw = me && me.team === 1 ? -Math.PI / 2 : Math.PI / 2;
-  input.pitch = 0.3;
+  faceAttack();
+  input.pitch = 0.38;
   $('lockHint').hidden = input.isTouch;
 }
 
-// Kicks go where you're steering (WASD / joystick, relative to the camera).
-// Standing still, they go where the camera is looking.
+function faceAttack() {
+  input.setYaw(myTeam() === 1 ? -Math.PI / 2 : Math.PI / 2);
+}
+
+// Kicks go where you're steering (WASD / joystick). Standing still, they go
+// where the camera looks (mouse players) or the way you're facing (touch).
 function actionAim() {
+  const so = app.matchPhase === 'shootout' || (app.sim && app.sim.phase === 'shootout') ? soInfo() : null;
+  if (so && app.meState && so.ki === app.meState.num) {
+    // Free kick: camera direction, nudged left/right with the stick / A-D.
+    const { s } = input.localMove();
+    return input.yaw - Math.max(-1, Math.min(1, s)) * 0.3; // full push = just inside the post
+  }
   const m = input.movement();
   if (Math.hypot(m.mx, m.mz) > 0.3) return Math.atan2(m.mx, m.mz);
+  if (!input.locked && app.meState) return app.meState.yaw;
   return input.yaw;
+}
+
+// The teammate a pass would go to right now (shown with a ring), as both the
+// render num and the player id the host understands.
+function currentPassTarget(state, aim) {
+  const me = state.players.find((p) => p.isMe);
+  if (!me) return null;
+  const list = state.players.map((p) => ({ id: p.num, team: p.team, x: p.x, z: p.z }));
+  const t = pickPassTarget(list, { id: me.num, team: me.team, x: me.x, z: me.z }, aim);
+  if (!t) return null;
+  const info = app.roster.find((p) => p.num === t.id);
+  return info ? { num: t.id, id: info.id } : null;
 }
 
 input.onAction = (kind, power) => {
   if (app.screen !== 'game') return;
   const aim = actionAim();
+  const target = kind === 'pass' && app.lastState ? currentPassTarget(app.lastState, aim) : null;
+  const tg = target ? target.id : null;
   if (app.role === 'client') {
-    app.net.send({ t: 'act', k: kind, p: Math.round(power * 100) / 100, aim: Math.round(aim * 1000) / 1000 });
+    app.net.send({ t: 'act', k: kind, p: Math.round(power * 100) / 100, aim: Math.round(aim * 1000) / 1000, tg });
     const pr = app.pred;
-    if (kind === 'tackle' && pr && pr.tackleCd <= 0 && pr.stunT <= 0 && app.matchPhase === 'play') {
+    const meS = app.meState;
+    const soNow = soInfo();
+    const keeperDive = meS && (((meS.flags & 64) && inBox(ownBox(app.field, myTeam()), pr ? pr.x : 0, pr ? pr.z : 0))
+      || (app.matchPhase === 'shootout' && soNow && soNow.ke === meS.num));
+    if (kind === 'tackle' && keeperDive && pr && !(pr.diveCd > 0) && app.matchPhase === 'play') {
+      const mv = input.movement();
+      let dx = mv.mx, dz = mv.mz;
+      if (Math.hypot(dx, dz) < 0.1) { dx = Math.sin(aim); dz = Math.cos(aim); }
+      const l = Math.hypot(dx, dz);
+      pr.vx = (dx / l) * C.diveSpeed; pr.vz = (dz / l) * C.diveSpeed;
+      pr.diveT = C.diveTime; pr.diveCd = C.diveCooldown;
+    } else if (kind === 'tackle' && pr && pr.tackleCd <= 0 && pr.stunT <= 0 && app.matchPhase === 'play') {
       const mv = input.movement();
       let dx = mv.mx, dz = mv.mz;
       if (Math.hypot(dx, dz) < 0.1) { dx = Math.sin(aim); dz = Math.cos(aim); }
@@ -653,7 +766,7 @@ input.onAction = (kind, power) => {
       pr.tackleT = C.tackleTime; pr.tackleCd = C.tackleCooldown;
     }
   } else if (app.sim) {
-    app.sim.queueAction(app.myId, kind, power, aim);
+    app.sim.queueAction(app.myId, kind, power, aim, tg);
   }
 };
 
@@ -662,7 +775,7 @@ input.onToggle = (name, val) => {
   if (name === 'menu') openPause();
   if (name === 'help') $('help').hidden = !$('help').hidden;
   if (name === 'mute') { const m = toggleMute(); toast(m ? 'Sound off' : 'Sound on'); syncPauseButtons(); }
-  if (name === 'ballcam') { toast(val ? 'Ball cam on' : 'Ball cam off'); syncPauseButtons(); }
+  if (name === 'cam') { toast(`Camera: ${CAM_LABELS[val]}`); syncPauseButtons(); }
   if (name === 'scores') showScoreTable(val);
 };
 
@@ -696,7 +809,9 @@ function handleEvents(list) {
       case 'kick':
         if (e.kind === 'shoot') { sfx.kick(e.power); if (e.power > 0.75) renderer.rainbowBurst(0.7); }
         else if (e.kind === 'pass') sfx.pass();
-        else if (e.kind === 'chip') sfx.kick(0.5);
+        else if (e.kind === 'chip' || e.kind === 'lob') sfx.kick(0.5);
+        else if (e.kind === 'punt') sfx.kick(0.9);
+        else if (e.kind === 'throw' || e.kind === 'roll') sfx.pass();
         else if (e.kind === 'flick') {
           sfx.flick(); renderer.rainbowBurst(1.6);
           const n = nameOf(e.id);
@@ -704,6 +819,12 @@ function handleEvents(list) {
         }
         break;
       case 'tackle': sfx.tackle(); break;
+      case 'dive': sfx.tackle(); break;
+      case 'save': {
+        sfx.save();
+        if (e.big) toast(`🧤 Great save by ${nameOf(e.id)}!`);
+        break;
+      }
       case 'post': sfx.post(); toast('Off the woodwork!'); break;
       case 'call': {
         const me = app.roster.find((p) => p.id === app.myId);
@@ -734,6 +855,26 @@ function handleEvents(list) {
         break;
       }
       case 'end': showEnd(e); break;
+      case 'shootout':
+        sfx.whistle();
+        centerMsg(`FREE KICKS!<small>Tie breaker · ${TEAMS[e.first].name} kick first</small>`, 'goal', 2600);
+        app.soStartAt = performance.now();
+        break;
+      case 'so_setup': {
+        const meId = app.myId;
+        if (e.kicker === meId) { input.setYaw(Math.PI / 2); toast('⚽ Your free kick! Aim with the stick / A-D, then shoot.'); }
+        else if (e.keeper === meId) { input.setYaw(-Math.PI / 2); toast('🧤 You are in goal! Move along the line and Dive.'); }
+        else input.setYaw(Math.PI / 2);
+        input.pitch = 0.3;
+        const wait = Math.max(300, 2700 - (performance.now() - (app.soStartAt || 0)));
+        setTimeout(() => centerMsg(`${escapeHtml(nameOf(e.kicker))}<small>${TEAMS[e.team].name} · vs ${escapeHtml(nameOf(e.keeper))}</small>`, '', 1600), wait);
+        break;
+      }
+      case 'so_kick':
+        if (e.result === 'goal') { sfx.goal(); centerMsg('GOAL!', 'goal', 1800); }
+        else if (e.result === 'save') centerMsg('SAVED!', '', 1800);
+        else { sfx.post(); centerMsg('MISSED!', '', 1800); }
+        break;
     }
   }
 }
@@ -750,10 +891,13 @@ function showEnd(e) {
   $('endScore').innerHTML = `<span class="s0">${e.score[0]}</span> – <span class="s1">${e.score[1]}</span>`;
   const me = app.roster.find((p) => p.id === app.myId);
   let text;
-  if (e.score[0] === e.score[1]) text = "It's a draw!";
+  const so = e.so;
+  if (so) $('endScore').innerHTML += `<div class="end-so">Free kicks <span class="s0">${so[0]}</span> – <span class="s1">${so[1]}</span></div>`;
+  const decided = so ? so[0] !== so[1] : e.score[0] !== e.score[1];
+  if (!decided) text = "It's a draw!";
   else {
-    const w = e.score[0] > e.score[1] ? 0 : 1;
-    text = `${TEAMS[w].name} win!` + (me ? (me.team === w ? ' 🎉' : ' Better luck next time.') : '');
+    const w = so ? (so[0] > so[1] ? 0 : 1) : (e.score[0] > e.score[1] ? 0 : 1);
+    text = `${TEAMS[w].name} win${so ? ' on free kicks' : ''}!` + (me ? (me.team === w ? ' 🎉' : ' Better luck next time.') : '');
   }
   $('endWinner').textContent = text;
   $('endScorers').textContent = e.scorers && e.scorers.length
@@ -797,7 +941,8 @@ function syncPausedUI(by) {
 function syncPauseButtons() {
   syncPausedUI();
   syncSkillSelects();
-  $('ballCamBtn').textContent = `Ball cam: ${input.ballCam ? 'on' : 'off'} (V)`;
+  $('ballCamBtn').textContent = `Camera: ${CAM_LABELS[input.camMode]} (V)`;
+  $('keeperBtn').textContent = amKeeper() ? 'Play outfield instead' : '🧤 Play goalkeeper';
   $('muteBtn').textContent = `Sound: ${isMuted() ? 'off' : 'on'} (M)`;
 }
 $('menuBtn').onclick = () => openPause();
@@ -811,7 +956,8 @@ $('bannerResumeBtn').onclick = () => { requestPause(false); };
 $('endNowBtn').onclick = () => endMatchNow();
 $('toLobbyBtn').onclick = () => returnToLobby();
 $('leaveGameBtn').onclick = () => leave();
-$('ballCamBtn').onclick = () => { input.ballCam = !input.ballCam; syncPauseButtons(); };
+$('ballCamBtn').onclick = () => { input.cycleCam(); syncPauseButtons(); };
+$('keeperBtn').onclick = () => { requestKeeper(!amKeeper()); setTimeout(syncPauseButtons, 300); };
 $('muteBtn').onclick = () => { toggleMute(); syncPauseButtons(); };
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
@@ -834,6 +980,23 @@ function showScoreTable(show) {
   }).join('');
 }
 
+// Touch buttons change meaning for a goalkeeper.
+let touchLabelKey = '';
+function updateTouchLabels(me) {
+  if (!input.isTouch) return;
+  const so = soInfo();
+  const gk = me && ((me.flags & 64) || (so && so.ke === me.num));
+  const holding = me && (me.flags & 32);
+  const key = `${gk ? 1 : 0}${holding ? 1 : 0}`;
+  if (key === touchLabelKey) return;
+  touchLabelKey = key;
+  $('tShoot').textContent = holding ? 'Punt' : 'Shoot';
+  $('tPass').textContent = holding ? 'Throw' : 'Pass';
+  $('tChip').textContent = holding ? 'Lob' : 'Chip';
+  $('tFlick').textContent = holding ? 'Roll' : 'Flick';
+  $('tTackle').textContent = gk ? 'Dive' : 'Tackle';
+}
+
 function toast(text) {
   const el = document.createElement('div');
   el.className = 'toast';
@@ -847,11 +1010,30 @@ function toast(text) {
 // ---------- HUD ----------
 const mm = $('minimap');
 const mctx = mm.getContext('2d');
+function drawShootout(so) {
+  const el = $('soTracker');
+  el.hidden = !so;
+  if (!so) return;
+  const key = JSON.stringify([so.k, so.tu, so.st]);
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  const rounds = Math.max(5, so.k[0].length, so.k[1].length);
+  el.innerHTML = [0, 1].map((t) => {
+    let dots = '';
+    for (let i = 0; i < rounds; i++) {
+      const v = so.k[t][i];
+      const next = so.tu === t && i === so.k[t].length && so.st !== 'result';
+      dots += `<i class="${v === 1 ? 'hit' : v === 0 ? 'miss' : next ? 'next' : ''}"></i>`;
+    }
+    return `<div class="so-row"><span style="color:${TEAMS[t].css}">${TEAMS[t].name}</span><b>${so.g[t]}</b>${dots}</div>`;
+  }).join('');
+}
+
 function drawHud(state, phase, phaseT, timeLeft, score, field) {
   $('score0').textContent = score[0];
   $('score1').textContent = score[1];
   const tl = Math.max(0, Math.ceil(timeLeft));
-  $('clock').textContent = `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
+  $('clock').textContent = phase === 'shootout' ? 'FK' : `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
   $('powerBar').style.width = `${input.chargeLevel() * 100}%`;
   const me = state.players.find((p) => p.isMe);
   const stamina = app.pred ? app.pred.stamina : me ? me.stamina : 1;
@@ -974,9 +1156,34 @@ function frame() {
     }
     renderer.setField(field);
     const me = state.players.find((p) => p.isMe);
+    app.meState = me || null;
+    app.lastState = state;
+    // New kickoff: point the camera at the goal we attack.
+    if (phase === 'countdown' && app.lastFramePhase !== 'countdown' && app.lastFramePhase !== 'paused') faceAttack();
+    app.lastFramePhase = phase;
+    input.noAutoCam = phase === 'shootout'; // fixed views during free kicks
     input.update(dt, me, state.ball);
+
+    // Aim arrow + highlighted pass target whenever I'm on (or holding) the ball.
+    let aimInfo = null;
+    const soNow = phase === 'shootout' ? soInfo() : null;
+    if (me && input.enabled && soNow && soNow.ki === me.num && soNow.st === 'aim') {
+      const b = state.ball;
+      renderer.setAim({ x: b.x, z: b.z, aim: actionAim(), target: null }, state.players);
+    } else if (me && input.enabled && phase === 'play') {
+      const b = state.ball;
+      const near = Math.hypot(b.x - me.x, b.z - me.z) < 2.4 && b.y < 2;
+      if (near || (me.flags & 32) || input.charging) {
+        const aim = actionAim();
+        const tgt = currentPassTarget(state, aim);
+        aimInfo = { x: me.x, z: me.z, aim, target: tgt ? tgt.num : null };
+      }
+    }
+    if (!(soNow && me && soNow.ki === me.num && soNow.st === 'aim')) renderer.setAim(aimInfo, state.players);
+    drawShootout(soNow);
     renderer.frame(state, dt, { yaw: input.yaw, pitch: input.pitch, dist: 9, spectate: !me });
     drawHud(state, phase, phaseT, timeLeft, score, field);
+    updateTouchLabels(me);
   } else {
     orbitT += dt * 0.06;
     renderer.frame({ players: [], ball: { x: 0, y: C.ballRadius, z: 0, vx: 0, vy: 0, vz: 0 } }, dt, { orbit: orbitT });
