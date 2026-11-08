@@ -2,7 +2,9 @@
 // Produces a camera-relative movement vector and discrete actions.
 //
 // Camera modes:
-//   follow - the camera swings round behind the direction you run (default)
+//   pitch  - looks down the pitch toward the goal you attack, leaning a little
+//            toward the ball; "up" on the stick always means toward that goal (default)
+//   follow - the camera swings round behind the direction you run
 //   ball   - the camera keeps the ball in view
 //   manual - only the mouse / right thumb / arrow keys turn the camera
 //
@@ -10,8 +12,8 @@
 // the moment you pressed it, so the follow camera can swing round behind you
 // without changing where you're running.
 
-export const CAM_MODES = ['follow', 'ball', 'manual'];
-export const CAM_LABELS = { follow: 'Follow player', ball: 'Ball cam', manual: 'Manual' };
+export const CAM_MODES = ['pitch', 'follow', 'ball', 'manual'];
+export const CAM_LABELS = { pitch: 'Pitch view', follow: 'Follow player', ball: 'Ball cam', manual: 'Manual' };
 const wrap = (a) => {
   while (a > Math.PI) a -= Math.PI * 2;
   while (a < -Math.PI) a += Math.PI * 2;
@@ -25,7 +27,8 @@ export class Input {
     this.enabled = false;
     this.yaw = 0;
     this.pitch = 0.3;
-    this.camMode = 'follow';
+    this.camMode = 'pitch';
+    this.attackYaw = Math.PI / 2; // direction of the goal we attack (set by the game)
     this.refYaw = 0; // camera angle movement is measured against
     this.held = false;
     this.heldAng = 0;
@@ -37,7 +40,7 @@ export class Input {
     this.onToggle = () => {}; // (name)
     this.touch = { active: false, jx: 0, jz: 0, sprint: false };
     this.isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-    try { if (CAM_MODES.includes(localStorage.getItem('rfs-cam'))) this.camMode = localStorage.getItem('rfs-cam'); } catch (e) { /* ignore */ }
+    try { if (CAM_MODES.includes(localStorage.getItem('rfs-cam2'))) this.camMode = localStorage.getItem('rfs-cam2'); } catch (e) { /* ignore */ }
 
     window.addEventListener('keydown', (e) => this.keydown(e));
     window.addEventListener('keyup', (e) => this.keyup(e));
@@ -97,7 +100,7 @@ export class Input {
 
   cycleCam() {
     this.camMode = CAM_MODES[(CAM_MODES.indexOf(this.camMode) + 1) % CAM_MODES.length];
-    try { localStorage.setItem('rfs-cam', this.camMode); } catch (e) { /* ignore */ }
+    try { localStorage.setItem('rfs-cam2', this.camMode); } catch (e) { /* ignore */ }
     this.onToggle('cam', this.camMode);
   }
 
@@ -168,9 +171,17 @@ export class Input {
       this.refYaw = this.yaw;
     }
 
-    const manualRecently = performance.now() - this.lastManual < 1200 || this.touch.dragging;
+    const manualRecently = performance.now() - this.lastManual < (this.camMode === 'pitch' ? 2500 : 1200) || this.touch.dragging;
     if (!me || manualRecently || this.noAutoCam) return;
-    if (this.camMode === 'follow') {
+    if (this.camMode === 'pitch') {
+      // Mostly fixed along the pitch; only a small lean toward the ball.
+      let target = this.attackYaw;
+      if (ball) {
+        const dx = ball.x - me.x, dz = ball.z - me.z;
+        if (Math.hypot(dx, dz) > 3) target += Math.max(-0.4, Math.min(0.4, wrap(Math.atan2(dx, dz) - this.attackYaw) * 0.3));
+      }
+      this.yaw += wrap(target - this.yaw) * Math.min(1, dt * 2.5);
+    } else if (this.camMode === 'follow') {
       // Swing round behind the way the player is running.
       const sp = Math.hypot(me.vx, me.vz);
       if (sp > 1.5) {

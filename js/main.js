@@ -1162,6 +1162,7 @@ function frame() {
     if (phase === 'countdown' && app.lastFramePhase !== 'countdown' && app.lastFramePhase !== 'paused') faceAttack();
     app.lastFramePhase = phase;
     input.noAutoCam = phase === 'shootout'; // fixed views during free kicks
+    input.attackYaw = myTeam() === 1 ? -Math.PI / 2 : Math.PI / 2;
     input.update(dt, me, state.ball);
 
     // Aim arrow + highlighted pass target whenever I'm on (or holding) the ball.
