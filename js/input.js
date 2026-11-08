@@ -2,8 +2,10 @@
 // Produces a camera-relative movement vector and discrete actions.
 //
 // Camera modes:
-//   pitch  - looks down the pitch toward the goal you attack, leaning a little
-//            toward the ball; "up" on the stick always means toward that goal (default)
+//   pitch  - looks straight down the pitch, leaning a little toward the ball
+//            (default). It faces the goal you attack, and turns round to face
+//            the other way only when the ball gets well behind you, so you can
+//            always see it; "up" means toward whichever goal the camera faces
 //   follow - the camera swings round behind the direction you run
 //   ball   - the camera keeps the ball in view
 //   manual - only the mouse / right thumb / arrow keys turn the camera
@@ -29,6 +31,7 @@ export class Input {
     this.pitch = 0.3;
     this.camMode = 'pitch';
     this.attackYaw = Math.PI / 2; // direction of the goal we attack (set by the game)
+    this.pitchFacing = 1; // 1 = facing the goal we attack, -1 = turned round toward our own
     this.refYaw = 0; // camera angle movement is measured against
     this.held = false;
     this.heldAng = 0;
@@ -114,6 +117,7 @@ export class Input {
 
   // Snap the camera (and movement reference) to an angle, e.g. at kickoff.
   setYaw(y) {
+    this.pitchFacing = 1;
     this.yaw = y;
     this.refYaw = y;
     this.held = false;
@@ -174,13 +178,23 @@ export class Input {
     const manualRecently = performance.now() - this.lastManual < (this.camMode === 'pitch' ? 2500 : 1200) || this.touch.dragging;
     if (!me || manualRecently || this.noAutoCam) return;
     if (this.camMode === 'pitch') {
-      // Mostly fixed along the pitch; only a small lean toward the ball.
-      let target = this.attackYaw;
+      // Two steady directions along the pitch, plus a small lean toward the ball.
+      let base = this.attackYaw;
+      if (ball) {
+        const ax = Math.sin(this.attackYaw), az = Math.cos(this.attackYaw);
+        const along = (ball.x - me.x) * ax + (ball.z - me.z) * az; // + = ball ahead toward their goal
+        // Hysteresis so the view doesn't flip back and forth.
+        if (this.pitchFacing === 1 && along < -5) this.pitchFacing = -1;
+        else if (this.pitchFacing === -1 && along > 2) this.pitchFacing = 1;
+        if (this.pitchFacing === -1) base = this.attackYaw + Math.PI;
+      }
+      let target = base;
       if (ball) {
         const dx = ball.x - me.x, dz = ball.z - me.z;
-        if (Math.hypot(dx, dz) > 3) target += Math.max(-0.4, Math.min(0.4, wrap(Math.atan2(dx, dz) - this.attackYaw) * 0.3));
+        if (Math.hypot(dx, dz) > 3) target += Math.max(-0.4, Math.min(0.4, wrap(Math.atan2(dx, dz) - base) * 0.3));
       }
-      this.yaw += wrap(target - this.yaw) * Math.min(1, dt * 2.5);
+      const diff = wrap(target - this.yaw);
+      this.yaw += diff * Math.min(1, dt * (Math.abs(diff) > 1 ? 4 : 2.5)); // turn round quickly
     } else if (this.camMode === 'follow') {
       // Swing round behind the way the player is running.
       const sp = Math.hypot(me.vx, me.vz);
