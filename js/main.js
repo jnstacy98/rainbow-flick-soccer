@@ -1,5 +1,5 @@
 // App glue: menus, lobby, hosting/joining, game loop, HUD.
-import { Sim, TEAMS, MAX_PER_TEAM, integratePlayerMovement, fieldForTeamSize, C, ownBox, inBox, pickPassTarget } from './sim.js';
+import { Sim, TEAMS, MAX_PER_TEAM, integratePlayerMovement, fieldForTeamSize, C, ownBox, inBox, pickPassTarget, shootoutKeeperBox } from './sim.js';
 import { Renderer } from './render.js';
 import { Input, CAM_LABELS } from './input.js';
 import { HostNet, ClientNet, normalizeCode } from './net.js';
@@ -15,7 +15,7 @@ const app = {
   screen: 'menu', // menu | lobby | game
   myId: null,
   code: null,
-  settings: { duration: 300, fill: 0, skill: [1, 1] },
+  settings: { duration: 300, fill: 0, skill: [1, 1], tiebreak: true },
   roster: [],
   inGame: false,
   paused: false,
@@ -182,7 +182,7 @@ function startHosting(role, name, net, code) {
   app.code = code;
   app.myId = 'host';
   app.sim = new Sim();
-  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0, skill: [1, 1] };
+  app.settings = { duration: 300, fill: role === 'local' ? 3 : 0, skill: [1, 1], tiebreak: true };
   app.sim.addPlayer('host', name, 0, false);
   app.inGame = false;
   if (net) {
@@ -325,6 +325,7 @@ function startMatch() {
   if (!canStart()) return;
   rebalanceBots();
   app.sim.botSkill = app.settings.skill;
+  app.sim.tiebreak = app.settings.tiebreak !== false;
   app.sim.start(app.settings.duration);
   app.inGame = true;
   refreshLobby();
@@ -382,6 +383,7 @@ function setLobbyChrome() {
   $('endNowBtn').hidden = !isHost;
   $('pauseSkills').hidden = !isHost;
   document.querySelectorAll('.skill-sel').forEach((el) => { el.disabled = !isHost; });
+  $('tiebreakSel').disabled = !isHost;
 }
 
 function inviteLink() {
@@ -463,7 +465,13 @@ $('fillSel').onchange = (e) => { app.settings.fill = +e.target.value; rebalanceB
 document.querySelectorAll('.skill-sel').forEach((el) => {
   el.onchange = () => { setSkill(+el.dataset.team, +el.value); toast(`${TEAMS[+el.dataset.team].name} bots: ${el.selectedOptions[0].text}`); };
 });
+$('tiebreakSel').onchange = (e) => {
+  app.settings.tiebreak = e.target.value === '1';
+  if (app.sim) app.sim.tiebreak = app.settings.tiebreak;
+  refreshLobby();
+};
 function syncSkillSelects() {
+  $('tiebreakSel').value = app.settings.tiebreak === false ? '0' : '1';
   const sk = app.settings.skill || [1, 1];
   document.querySelectorAll('.skill-sel').forEach((el) => { el.value = String(sk[+el.dataset.team]); });
 }
@@ -530,6 +538,18 @@ function startPinging() {
     if (app.role !== 'client' || !app.net) { clearInterval(pingTimer); return; }
     app.net.send({ t: 'ping', ts: performance.now() });
   }, 2000);
+}
+
+// Current free-kick shootout summary (same shape for host and clients).
+function soInfo() {
+  if (app.role === 'client') return app.latest && app.latest.so ? app.latest.so : null;
+  const sim = app.sim;
+  if (!sim || !sim.so) return null;
+  const so = sim.so;
+  return {
+    k: so.kicks, g: so.goals, tu: so.turn, st: so.stage, r: so.result,
+    ki: sim.players.get(so.kicker)?.num || 0, ke: sim.players.get(so.keeper)?.num || 0,
+  };
 }
 
 function myTeam() {
@@ -619,7 +639,15 @@ function clientState(dt) {
   // Local prediction for my own player.
   const pr = app.pred;
   if (pr) {
-    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended' || app.matchPhase === 'paused';
+    const so = app.matchPhase === 'shootout' ? soInfo() : null;
+    const soKeeper = so && so.ke === num && (so.st === 'aim' || so.st === 'flight');
+    const frozen = app.matchPhase === 'countdown' || app.matchPhase === 'ended' || app.matchPhase === 'paused'
+      || (app.matchPhase === 'shootout' && !soKeeper);
+    if (so && !soKeeper) {
+      // Everyone else stands still: follow the host's position exactly.
+      const meL = app.latest.p.find((p) => p[0] === num);
+      if (meL) { pr.x = meL[1]; pr.z = meL[2]; pr.yaw = meL[5]; pr.vx = 0; pr.vz = 0; }
+    }
     pr.tackleT = Math.max(0, pr.tackleT - dt);
     pr.tackleCd = Math.max(0, pr.tackleCd - dt);
     pr.stunT = Math.max(0, pr.stunT - dt);
@@ -627,7 +655,10 @@ function clientState(dt) {
     pr.diveCd = Math.max(0, (pr.diveCd || 0) - dt);
     const L0 = app.latest && app.latest.p.find((p) => p[0] === num);
     const holding = L0 && (L0[7] & 32);
-    integratePlayerMovement(pr, input.movement(), dt, { frozen, field: app.field, box: holding ? ownBox(app.field, myTeam()) : null });
+    integratePlayerMovement(pr, input.movement(), dt, {
+      frozen, field: app.field,
+      box: soKeeper ? shootoutKeeperBox(app.field) : holding ? ownBox(app.field, myTeam()) : null,
+    });
     const mine = players.find((p) => p.isMe);
     if (mine) Object.assign(mine, { x: pr.x, z: pr.z, vx: pr.vx, vz: pr.vz, yaw: pr.yaw });
     // When I'm dribbling, draw the ball relative to my predicted position.
@@ -683,6 +714,12 @@ function faceAttack() {
 // Kicks go where you're steering (WASD / joystick). Standing still, they go
 // where the camera looks (mouse players) or the way you're facing (touch).
 function actionAim() {
+  const so = app.matchPhase === 'shootout' || (app.sim && app.sim.phase === 'shootout') ? soInfo() : null;
+  if (so && app.meState && so.ki === app.meState.num) {
+    // Free kick: camera direction, nudged left/right with the stick / A-D.
+    const { s } = input.localMove();
+    return input.yaw - Math.max(-1, Math.min(1, s)) * 0.3; // full push = just inside the post
+  }
   const m = input.movement();
   if (Math.hypot(m.mx, m.mz) > 0.3) return Math.atan2(m.mx, m.mz);
   if (!input.locked && app.meState) return app.meState.yaw;
@@ -710,7 +747,9 @@ input.onAction = (kind, power) => {
     app.net.send({ t: 'act', k: kind, p: Math.round(power * 100) / 100, aim: Math.round(aim * 1000) / 1000, tg });
     const pr = app.pred;
     const meS = app.meState;
-    const keeperDive = meS && (meS.flags & 64) && inBox(ownBox(app.field, myTeam()), pr ? pr.x : 0, pr ? pr.z : 0);
+    const soNow = soInfo();
+    const keeperDive = meS && (((meS.flags & 64) && inBox(ownBox(app.field, myTeam()), pr ? pr.x : 0, pr ? pr.z : 0))
+      || (app.matchPhase === 'shootout' && soNow && soNow.ke === meS.num));
     if (kind === 'tackle' && keeperDive && pr && !(pr.diveCd > 0) && app.matchPhase === 'play') {
       const mv = input.movement();
       let dx = mv.mx, dz = mv.mz;
@@ -816,6 +855,26 @@ function handleEvents(list) {
         break;
       }
       case 'end': showEnd(e); break;
+      case 'shootout':
+        sfx.whistle();
+        centerMsg(`FREE KICKS!<small>Tie breaker · ${TEAMS[e.first].name} kick first</small>`, 'goal', 2600);
+        app.soStartAt = performance.now();
+        break;
+      case 'so_setup': {
+        const meId = app.myId;
+        if (e.kicker === meId) { input.setYaw(Math.PI / 2); toast('⚽ Your free kick! Aim with the stick / A-D, then shoot.'); }
+        else if (e.keeper === meId) { input.setYaw(-Math.PI / 2); toast('🧤 You are in goal! Move along the line and Dive.'); }
+        else input.setYaw(Math.PI / 2);
+        input.pitch = 0.3;
+        const wait = Math.max(300, 2700 - (performance.now() - (app.soStartAt || 0)));
+        setTimeout(() => centerMsg(`${escapeHtml(nameOf(e.kicker))}<small>${TEAMS[e.team].name} · vs ${escapeHtml(nameOf(e.keeper))}</small>`, '', 1600), wait);
+        break;
+      }
+      case 'so_kick':
+        if (e.result === 'goal') { sfx.goal(); centerMsg('GOAL!', 'goal', 1800); }
+        else if (e.result === 'save') centerMsg('SAVED!', '', 1800);
+        else { sfx.post(); centerMsg('MISSED!', '', 1800); }
+        break;
     }
   }
 }
@@ -832,10 +891,13 @@ function showEnd(e) {
   $('endScore').innerHTML = `<span class="s0">${e.score[0]}</span> – <span class="s1">${e.score[1]}</span>`;
   const me = app.roster.find((p) => p.id === app.myId);
   let text;
-  if (e.score[0] === e.score[1]) text = "It's a draw!";
+  const so = e.so;
+  if (so) $('endScore').innerHTML += `<div class="end-so">Free kicks <span class="s0">${so[0]}</span> – <span class="s1">${so[1]}</span></div>`;
+  const decided = so ? so[0] !== so[1] : e.score[0] !== e.score[1];
+  if (!decided) text = "It's a draw!";
   else {
-    const w = e.score[0] > e.score[1] ? 0 : 1;
-    text = `${TEAMS[w].name} win!` + (me ? (me.team === w ? ' 🎉' : ' Better luck next time.') : '');
+    const w = so ? (so[0] > so[1] ? 0 : 1) : (e.score[0] > e.score[1] ? 0 : 1);
+    text = `${TEAMS[w].name} win${so ? ' on free kicks' : ''}!` + (me ? (me.team === w ? ' 🎉' : ' Better luck next time.') : '');
   }
   $('endWinner').textContent = text;
   $('endScorers').textContent = e.scorers && e.scorers.length
@@ -922,7 +984,8 @@ function showScoreTable(show) {
 let touchLabelKey = '';
 function updateTouchLabels(me) {
   if (!input.isTouch) return;
-  const gk = me && (me.flags & 64);
+  const so = soInfo();
+  const gk = me && ((me.flags & 64) || (so && so.ke === me.num));
   const holding = me && (me.flags & 32);
   const key = `${gk ? 1 : 0}${holding ? 1 : 0}`;
   if (key === touchLabelKey) return;
@@ -947,11 +1010,30 @@ function toast(text) {
 // ---------- HUD ----------
 const mm = $('minimap');
 const mctx = mm.getContext('2d');
+function drawShootout(so) {
+  const el = $('soTracker');
+  el.hidden = !so;
+  if (!so) return;
+  const key = JSON.stringify([so.k, so.tu, so.st]);
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  const rounds = Math.max(5, so.k[0].length, so.k[1].length);
+  el.innerHTML = [0, 1].map((t) => {
+    let dots = '';
+    for (let i = 0; i < rounds; i++) {
+      const v = so.k[t][i];
+      const next = so.tu === t && i === so.k[t].length && so.st !== 'result';
+      dots += `<i class="${v === 1 ? 'hit' : v === 0 ? 'miss' : next ? 'next' : ''}"></i>`;
+    }
+    return `<div class="so-row"><span style="color:${TEAMS[t].css}">${TEAMS[t].name}</span><b>${so.g[t]}</b>${dots}</div>`;
+  }).join('');
+}
+
 function drawHud(state, phase, phaseT, timeLeft, score, field) {
   $('score0').textContent = score[0];
   $('score1').textContent = score[1];
   const tl = Math.max(0, Math.ceil(timeLeft));
-  $('clock').textContent = `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
+  $('clock').textContent = phase === 'shootout' ? 'FK' : `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
   $('powerBar').style.width = `${input.chargeLevel() * 100}%`;
   const me = state.players.find((p) => p.isMe);
   const stamina = app.pred ? app.pred.stamina : me ? me.stamina : 1;
@@ -1079,11 +1161,16 @@ function frame() {
     // New kickoff: point the camera at the goal we attack.
     if (phase === 'countdown' && app.lastFramePhase !== 'countdown' && app.lastFramePhase !== 'paused') faceAttack();
     app.lastFramePhase = phase;
+    input.noAutoCam = phase === 'shootout'; // fixed views during free kicks
     input.update(dt, me, state.ball);
 
     // Aim arrow + highlighted pass target whenever I'm on (or holding) the ball.
     let aimInfo = null;
-    if (me && input.enabled && phase === 'play') {
+    const soNow = phase === 'shootout' ? soInfo() : null;
+    if (me && input.enabled && soNow && soNow.ki === me.num && soNow.st === 'aim') {
+      const b = state.ball;
+      renderer.setAim({ x: b.x, z: b.z, aim: actionAim(), target: null }, state.players);
+    } else if (me && input.enabled && phase === 'play') {
       const b = state.ball;
       const near = Math.hypot(b.x - me.x, b.z - me.z) < 2.4 && b.y < 2;
       if (near || (me.flags & 32) || input.charging) {
@@ -1092,7 +1179,8 @@ function frame() {
         aimInfo = { x: me.x, z: me.z, aim, target: tgt ? tgt.num : null };
       }
     }
-    renderer.setAim(aimInfo, state.players);
+    if (!(soNow && me && soNow.ki === me.num && soNow.st === 'aim')) renderer.setAim(aimInfo, state.players);
+    drawShootout(soNow);
     renderer.frame(state, dt, { yaw: input.yaw, pitch: input.pitch, dist: 9, spectate: !me });
     drawHud(state, phase, phaseT, timeLeft, score, field);
     updateTouchLabels(me);

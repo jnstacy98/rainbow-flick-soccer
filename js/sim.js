@@ -68,6 +68,15 @@ export function ownBox(f, team) {
     : { x0: f.L / 2 - boxD, x1: f.L / 2, z0: -boxW / 2, z1: boxW / 2 };
 }
 
+// Where the keeper may move during a free-kick shootout (always the +x goal).
+export function shootoutKeeperBox(f) {
+  return { x0: f.L / 2 - 2.5, x1: f.L / 2 - 0.4, z0: -(f.goalW / 2 + 1.5), z1: f.goalW / 2 + 1.5 };
+}
+
+export function shootoutSpotX(f) {
+  return f.L / 2 - Math.max(8, Math.min(11, f.L * 0.14));
+}
+
 export function inBox(box, x, z) {
   return x >= box.x0 && x <= box.x1 && z >= box.z0 && z <= box.z1;
 }
@@ -169,6 +178,8 @@ export class Sim {
     this.botSkill = [1, 1]; // index into BOT_SKILLS per team
     this.pausedFrom = null;
     this.pausedBy = '';
+    this.tiebreak = true; // free-kick shootout when a match ends level
+    this.so = null; // shootout state
   }
 
   skillOf(team) {
@@ -268,6 +279,7 @@ export class Sim {
     if (this.phase !== 'paused') return false;
     const from = this.pausedFrom || { phase: 'play', t: 0 };
     if (from.phase === 'goal') { this.phase = 'goal'; this.phaseT = from.t; }
+    else if (from.phase === 'shootout') { this.phase = 'shootout'; }
     else { this.phase = 'countdown'; this.phaseT = from.phase === 'countdown' ? Math.max(from.t, 1) : C.countdown; }
     this.pausedFrom = null;
     this.events.push({ k: 'resumed', by: byName });
@@ -280,6 +292,7 @@ export class Sim {
     this.duration = durationSec;
     this.timeLeft = durationSec;
     this.score = [0, 0];
+    this.so = null;
     for (const p of this.players.values()) p.goals = 0;
     this.kickoffTeam = Math.random() < 0.5 ? 0 : 1;
     this.resetKickoff();
@@ -354,6 +367,7 @@ export class Sim {
 
   step(dt) {
     if (this.phase === 'lobby' || this.phase === 'ended' || this.phase === 'paused') return;
+    if (this.phase === 'shootout') { this.stepShootout(dt); return; }
 
     if (this.phase === 'countdown') {
       this.phaseT -= dt;
@@ -611,7 +625,7 @@ export class Sim {
       case 'shoot': {
         const pw = a.power;
         const sp = 13 + 21 * pw;
-        const aim = this.assistShotAim(p, a.aim);
+        const aim = this.phase === 'shootout' ? a.aim : this.assistShotAim(p, a.aim);
         const ax = Math.sin(aim), az = Math.cos(aim);
         vx = ax * sp; vz = az * sp; vy = 1.2 + 3.2 * pw;
         break;
@@ -802,10 +816,243 @@ export class Sim {
   }
 
   endMatch() {
+    // Level at full time: settle it with free kicks.
+    if (this.tiebreak && !this.so && this.score[0] === this.score[1]
+        && this.teamList(0).length && this.teamList(1).length) {
+      this.startShootout();
+      return;
+    }
     this.phase = 'ended';
     const scorers = [...this.players.values()].filter((p) => p.goals > 0)
       .sort((a, b) => b.goals - a.goals).map((p) => ({ name: p.name, goals: p.goals, team: p.team }));
-    this.events.push({ k: 'end', score: [...this.score], scorers });
+    this.events.push({ k: 'end', score: [...this.score], scorers, so: this.so ? [...this.so.goals] : null });
+  }
+
+  // ---------- Free-kick shootout (tie breaker) ----------
+  // Teams alternate free kicks from a spot in front of the +x goal; five each,
+  // then sudden death. The other team's keeper defends.
+  startShootout() {
+    this.phase = 'shootout';
+    this.holder = null;
+    this.owner = null;
+    for (const p of this.players.values()) p.holding = false;
+    const first = Math.random() < 0.5 ? 0 : 1;
+    this.so = { kicks: [[], []], goals: [0, 0], turn: first, order: [0, 0], stage: 'ready', t: 0, kicker: null, keeper: null, result: null };
+    this.events.push({ k: 'shootout', first });
+    this.setupKick();
+  }
+
+  shootoutKickers(team) {
+    const list = this.teamList(team);
+    const keeper = this.shootoutKeeper(team);
+    const field = list.length > 1 ? list.filter((p) => p !== keeper) : list;
+    return [...field.filter((p) => !p.bot), ...field.filter((p) => p.bot)];
+  }
+
+  shootoutKeeper(team) {
+    const list = this.teamList(team);
+    return list.find((p) => p.gk && !p.bot) || list.find((p) => p.isGK) || list.find((p) => p.bot) || list[0];
+  }
+
+  setupKick() {
+    const so = this.so, f = this.field;
+    const kt = so.turn;
+    const kickers = this.shootoutKickers(kt);
+    const kicker = kickers[so.order[kt] % kickers.length];
+    const keeper = this.shootoutKeeper(1 - kt);
+    if (!kicker || !keeper) { this.finishShootout(); return; }
+    so.kicker = kicker.id;
+    so.keeper = keeper.id;
+    so.stage = 'ready';
+    so.t = 2.2;
+    so.result = null;
+    const spotX = shootoutSpotX(f);
+    this.ball = { x: spotX, y: C.ballRadius, z: 0, vx: 0, vy: 0, vz: 0 };
+    const others = [...this.players.values()].filter((p) => p !== kicker && p !== keeper);
+    const idx = [0, 0];
+    for (const p of this.players.values()) {
+      p.vx = 0; p.vz = 0; p.actions = []; p.diveT = 0; p.tackleT = 0; p.stunT = 0; p.kickCd = 0; p.holding = false;
+      if (p.ai) p.ai.diveAt = null;
+    }
+    kicker.x = spotX - 1.3; kicker.z = 0; kicker.yaw = Math.PI / 2;
+    keeper.x = f.L / 2 - 0.6; keeper.z = 0; keeper.yaw = -Math.PI / 2;
+    for (const p of others) {
+      const i = idx[p.team]++;
+      p.x = -4 + (i % 5) * 1.6;
+      p.z = (p.team === 0 ? -1 : 1) * (5 + Math.floor(i / 5) * 1.6);
+      p.yaw = Math.PI / 2;
+    }
+    this.events.push({ k: 'so_setup', kicker: kicker.id, keeper: keeper.id, team: kt });
+  }
+
+  stepShootout(dt) {
+    const so = this.so, f = this.field, b = this.ball;
+    so.t -= dt;
+    const kicker = this.players.get(so.kicker);
+    const keeper = this.players.get(so.keeper);
+    if (!kicker || !keeper) { this.setupKick(); return; }
+
+    for (const p of this.players.values()) {
+      p.kickCd = Math.max(0, p.kickCd - dt);
+      p.diveT = Math.max(0, p.diveT - dt);
+      p.diveCd = Math.max(0, p.diveCd - dt);
+      p.callT = 0;
+      if (p !== keeper) { p.vx = 0; p.vz = 0; }
+    }
+    // Kicker turns to face where they're aiming.
+    if (so.stage === 'aim' && !kicker.bot) kicker.yaw = kicker.input.aim || Math.PI / 2;
+
+    // Keeper moves along the line (once the kicker is ready) and can dive.
+    const canMove = so.stage === 'aim' || so.stage === 'flight';
+    if (keeper.bot && canMove) this.botKeeperShootout(keeper, dt);
+    integratePlayerMovement(keeper, keeper.input, dt, {
+      frozen: !canMove, field: f, box: shootoutKeeperBox(f),
+    });
+    if (canMove) {
+      const di = keeper.actions.findIndex((a) => a.kind === 'tackle');
+      if (di >= 0 && keeper.diveCd <= 0) this.doDive(keeper, keeper.actions[di].aim);
+    }
+    for (const p of this.players.values()) if (p !== kicker || so.stage !== 'aim') p.actions = [];
+
+    if (so.stage === 'ready') {
+      if (so.t <= 0) { so.stage = 'aim'; so.t = 10; this.events.push({ k: 'whistle' }); }
+      return;
+    }
+
+    if (so.stage === 'aim') {
+      let a = null;
+      if (kicker.bot) {
+        if (so.t < 8.6 - Math.random() * 0.8) {
+          const sk = this.skillOf(kicker.team);
+          const r = Math.random();
+          const tz = r < 0.15 ? 0 : (Math.random() < 0.5 ? -1 : 1) * (f.goalW / 2 - 0.55 - Math.random() * 0.6);
+          const aim = Math.atan2(f.L / 2 - b.x, tz - b.z) + (Math.random() - 0.5) * 2 * sk.aimErr * 0.6;
+          a = { kind: 'shoot', power: 0.6 + Math.random() * 0.35, aim };
+        }
+      } else {
+        for (const x of kicker.actions) x.t -= dt;
+        a = kicker.actions.find((x) => x.kind === 'shoot' || x.kind === 'chip' || x.kind === 'pass');
+        if (a && a.kind === 'pass') a = { ...a, kind: 'shoot', power: 0.45 };
+        kicker.actions = [];
+      }
+      if (a) {
+        kicker.x = b.x - Math.sin(a.aim) * 0.8;
+        kicker.z = b.z - Math.cos(a.aim) * 0.8;
+        this.kick(kicker, a);
+        so.stage = 'flight';
+        so.t = 3.5;
+        if (keeper.bot) this.planBotDive(keeper);
+      } else if (so.t <= 0) {
+        this.shootoutResult('miss');
+      }
+      return;
+    }
+
+    if (so.stage === 'flight') {
+      const vxBefore = b.vx;
+      this.stepBall(dt);
+      // Ball blocked by the keeper's body (bounced back off them) = save.
+      if (vxBefore > 0 && b.vx <= 0 && Math.hypot(b.x - keeper.x, b.z - keeper.z) < 1.6) {
+        this.events.push({ k: 'save', id: keeper.id, team: keeper.team, big: true });
+        this.shootoutResult('save');
+        return;
+      }
+      // Keeper save.
+      // Smaller reach than in open play so well-placed kicks beat the keeper.
+      const reach = keeper.diveT > 0 ? 1.15 : 0.9;
+      if (Math.hypot(b.x - keeper.x, b.z - keeper.z) < reach && b.y < 2.3 && keeper.kickCd <= 0) {
+        b.vx = -Math.abs(b.vx) * 0.25 - 2; b.vz *= 0.3; b.vy = Math.abs(b.vy) * 0.3 + 1;
+        this.events.push({ k: 'save', id: keeper.id, team: keeper.team, big: true });
+        this.shootoutResult('save');
+        return;
+      }
+      if (b.x > f.L / 2 + C.ballRadius && Math.abs(b.z) < f.goalW / 2 && b.y < f.goalH) { this.shootoutResult('goal'); return; }
+      const slow = Math.hypot(b.vx, b.vz) < 0.8 && b.y < C.ballRadius + 0.05;
+      if (so.t <= 0 || slow || b.x < shootoutSpotX(f) - 3 || (b.x > f.L / 2 - 0.5 && Math.abs(b.z) >= f.goalW / 2 + 0.3)) {
+        this.shootoutResult('miss');
+      }
+      return;
+    }
+
+    if (so.stage === 'result') {
+      this.stepBall(dt);
+      if (so.t <= 0) this.nextKick();
+    }
+  }
+
+  doDive(p, aim) {
+    let dx = p.input.mx, dz = p.input.mz;
+    if (Math.hypot(dx, dz) < 0.1) { dx = Math.sin(aim); dz = Math.cos(aim); }
+    const l = Math.hypot(dx, dz) || 1;
+    p.vx = (dx / l) * C.diveSpeed; p.vz = (dz / l) * C.diveSpeed;
+    p.diveT = C.diveTime; p.diveCd = C.diveCooldown;
+    this.events.push({ k: 'dive', id: p.id });
+  }
+
+  planBotDive(keeper) {
+    const b = this.ball, f = this.field;
+    const sk = this.skillOf(keeper.team);
+    const level = this.botSkill[keeper.team] | 0;
+    const tLine = b.vx > 0.1 ? (f.L / 2 - 0.6 - b.x) / b.vx : 1;
+    const zAt = b.z + b.vz * tLine;
+    const guess = Math.random() < 0.25 + level * 0.1;
+    let dir = guess ? Math.sign(zAt - keeper.z) : (Math.random() < 0.5 ? -1 : 1);
+    if (guess && Math.abs(zAt) < 1.1) dir = 0;
+    keeper.ai.diveAt = this.so.t - (0.18 + sk.think * 1.5);
+    keeper.ai.diveDir = dir;
+  }
+
+  botKeeperShootout(keeper) {
+    const ai = keeper.ai;
+    keeper.input.sprint = false;
+    keeper.input.mx = 0; keeper.input.mz = 0;
+    if (this.so.stage === 'flight' && ai.diveAt != null && this.so.t <= ai.diveAt) {
+      if (ai.diveDir) {
+        keeper.input.mz = ai.diveDir;
+        this.doDive(keeper, 0);
+        keeper.input.mz = 0;
+      }
+      ai.diveAt = null;
+    }
+  }
+
+  shootoutResult(result) {
+    const so = this.so;
+    so.result = result;
+    so.stage = 'result';
+    so.t = 2;
+    const scored = result === 'goal';
+    so.kicks[so.turn].push(scored ? 1 : 0);
+    if (scored) so.goals[so.turn]++;
+    const kicker = this.players.get(so.kicker);
+    this.events.push({ k: 'so_kick', team: so.turn, result, kicker: kicker ? kicker.name : '', goals: [...so.goals] });
+  }
+
+  shootoutDecided() {
+    const so = this.so;
+    const [n0, n1] = [so.kicks[0].length, so.kicks[1].length];
+    const [g0, g1] = so.goals;
+    if (n0 <= 5 && n1 <= 5) {
+      if (g0 + (5 - n0) < g1 || g1 + (5 - n1) < g0) return true;
+      if (n0 === 5 && n1 === 5) return g0 !== g1;
+      return false;
+    }
+    return n0 === n1 && g0 !== g1; // sudden death
+  }
+
+  nextKick() {
+    const so = this.so;
+    so.order[so.turn]++;
+    if (this.shootoutDecided() || so.kicks[0].length >= 30) { this.finishShootout(); return; }
+    so.turn = 1 - so.turn;
+    this.setupKick();
+  }
+
+  finishShootout() {
+    const so = this.so;
+    if (so.goals[0] === so.goals[1]) so.goals[Math.random() < 0.5 ? 0 : 1]++; // safety: never a draw
+    this.events.push({ k: 'so_end', goals: [...so.goals] });
+    this.endMatch();
   }
 
   // ---------- Bots ----------
@@ -951,6 +1198,10 @@ export class Sim {
       ]),
       f: this.field,
       pb: this.phase === 'paused' ? this.pausedBy : undefined,
+      so: this.so ? {
+        k: this.so.kicks, g: this.so.goals, tu: this.so.turn, st: this.so.stage, r: this.so.result,
+        ki: this.players.get(this.so.kicker)?.num || 0, ke: this.players.get(this.so.keeper)?.num || 0,
+      } : undefined,
     };
   }
 

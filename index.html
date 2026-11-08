@@ -109,6 +109,9 @@
             <option value="9">9 per team</option>
           </select>
         </label>
+        <label>If it's a draw
+          <select id="tiebreakSel"><option value="1" selected>Free-kick tie breaker</option><option value="0">Allow a draw</option></select>
+        </label>
         <label>Sunset bot skill
           <select id="skill0Sel" class="skill-sel" data-team="0"><option value="0">Easy</option><option value="1" selected>Normal</option><option value="2">Hard</option><option value="3">Pro</option></select>
         </label>
@@ -130,6 +133,7 @@
       <div class="sb-team t1"><span id="score1" class="sb-score">0</span><span class="sb-name">Ocean</span></div>
     </div>
     <canvas id="minimap" width="200" height="130"></canvas>
+    <div id="soTracker" class="so-tracker" hidden></div>
     <div id="center" class="center-msg"></div>
     <div id="toasts"></div>
     <div class="meters">

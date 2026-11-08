@@ -169,7 +169,7 @@ export class Input {
     }
 
     const manualRecently = performance.now() - this.lastManual < 1200 || this.touch.dragging;
-    if (!me || manualRecently) return;
+    if (!me || manualRecently || this.noAutoCam) return;
     if (this.camMode === 'follow') {
       // Swing round behind the way the player is running.
       const sp = Math.hypot(me.vx, me.vz);

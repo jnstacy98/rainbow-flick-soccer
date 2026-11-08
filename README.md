@@ -11,6 +11,7 @@ A third-person 3D soccer game you play in the browser with friends. 1v1 up to 9v
 - **Play goalkeeper**: tap **🧤 Play goalkeeper** in the lobby or the in-game menu (one per team). In your own box you catch the ball automatically. Tackle dives, Pass throws to a teammate, Shoot punts, Chip lobs and Flick rolls the ball out. You can hold the ball for up to 6 seconds.
 - **Follow camera**: the camera swings round behind the way you're running, so you don't need your other thumb to turn it. `V` (or the menu) switches to Ball cam or Manual.
 - **Aim arrow and pass target**: when you're on the ball, a yellow arrow shows where a kick will go, and a yellow ring marks the teammate a pass will reach.
+- **Free-kick tie breaker**: if a match ends level, it goes to a free-kick shootout. Teams take turns shooting at one goal against the other team's keeper: five kicks each, then sudden death. As the kicker, aim with the stick or `A`/`D` (the arrow shows where) and shoot. As the keeper, move along the line and dive. The host can turn it off in the lobby ("If it's a draw").
 - **Practice offline**: play against bots by yourself, no internet needed.
 
 ## Controls
